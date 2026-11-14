@@ -19,7 +19,7 @@ Welcome to the **Chamfer That Mesh** documentation wiki. This guide covers every
    Understand mesh health metrics (manifoldness, hole loops, open seams), automated and manual **MeshFixer** repair tools, non-destructive **Clean Loose Parts**, and the 20-level undo/redo history stack.
 
 5. **[File Formats & Sample Library](File-Formats-and-Sample-Library.md)**  
-   Importing and exporting binary/ASCII STL and OPC-compliant 3MF archives at exact 1:1 millimeter scale, plus descriptions of all 12 built-in basic and intricate sample models.
+   Importing and exporting binary/ASCII STL and OPC-compliant 3MF archives at exact 1:1 millimeter scale, plus descriptions of the built-in demo shapes (Pyramid, Hex Nut, and Tooth Gear).
 
 ---
 

@@ -1115,5 +1115,5 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Auto-load starter model (Cube) so user immediately sees chamfer in action
-loadFromUrl('./models/cube.stl', onModelLoaded, onModelLoadError);
+// Auto-load starter demo model (Pyramid) so user immediately sees chamfer in action
+loadFromUrl('./models/stepped_pyramid.stl', onModelLoaded, onModelLoadError);

@@ -30,38 +30,19 @@ The studio handles the two standard exchange formats used in additive manufactur
 
 ---
 
-## 2. Built-in Sample Model Library
+## 2. Built-in Demo Shapes
 
-The sample library accessible from the sidebar dropdown provides 12 curated geometric test models to explore features without needing to import external files:
-
-### Basic Shapes
-| Model | Dimensions | Description |
-|---|---|---|
-| **Cube (Default)** | $20 \times 20 \times 20\text{ mm}$ | Simple 12-triangle bounding box for quick bevel tests. |
-| **Cylinder** | $\varnothing 20 \times 20\text{ mm}$ | 32-segment cylindrical post testing curved facet angle thresholds and end-cap loop picking. |
-| **Wedge** | $20 \times 20 \times 20\text{ mm}$ | Right-angled triangular prism with a $45^\circ$ inclined ramp. |
-| **Chamfer Test Cube** | $25 \times 25 \times 25\text{ mm}$ | Pre-notched cube with varying corner step heights. |
-| **L-Bracket** | $30 \times 30 \times 10\text{ mm}$ | Orthogonal structural angle bracket testing convex vs concave angle filtering. |
-
----
-
-### Intricate Shapes
-
-The intricate sample collection features watertight manifold solids designed to test edge looping, concave avoidance, and multi-segment fillets:
+The sample library accessible from the sidebar dropdown provides 3 curated geometric models to explore features without needing to import external files:
 
 ![Hex Nut Topology and Wireframe](images/hex-nut-wireframe.png)
 
 | Model | Vertices / Triangles | Geometry & Testing Highlights |
 |---|---|---|
-| **Stepped Pyramid** | $48\text{ v} / 92\text{ f}$ | A 3-tier concentric architectural pyramid. Tests multi-level parallel horizontal loop selection and corner miter cuts. |
-| **Hollow Box** | $64\text{ v} / 124\text{ f}$ | A $20\text{ mm}$ cube with an open central $14\text{ mm}$ cavity. Tests the distinction between exterior top rim bevels and interior cavity edges. |
-| **Notched Block** | $40\text{ v} / 76\text{ f}$ | A stepped machine block with multiple $90^\circ$ steps, interior slots, and exterior corners. |
-| **Cross Block** | $64\text{ v} / 124\text{ f}$ | Two intersecting orthogonal rectangular prisms producing 12 coplanar perimeter facets and multiple $90^\circ$ concave reflex joints. |
-| **Star Prism** | $64\text{ v} / 124\text{ f}$ | An 8-pointed star extrusion testing acute angle detection ($< 45^\circ$) and knife-edge corner miter compensation. |
+| **Pyramid (Stepped)** | $48\text{ v} / 92\text{ f}$ | A 3-tier concentric architectural pyramid. Tests multi-level parallel horizontal loop selection and corner miter cuts. |
 | **Hex Nut** | $96\text{ v} / 188\text{ f}$ | Standard M10 hex nut with 6 outer hexagonal flats and a through-bore hole. Tests compound planar/cylindrical edge looping. |
-| **Spur Gear** | $2'724\text{ v} / 908\text{ f}$ | Precision 12-tooth spur gear with central shaft bore and intricate tooth root/crest geometry. |
+| **Tooth Gear** | $2'724\text{ v} / 908\text{ f}$ | Precision 12-tooth spur gear with central shaft bore and intricate tooth root/crest geometry. |
 
-![Spur Gear Watertight Chamfer](images/spur-gear-chamfered.png)
+![Tooth Gear Watertight Chamfer](images/spur-gear-chamfered.png)
 
 > [!TIP]
-> To try chamfering intricate teeth, load the **Spur Gear**, set **Angle Threshold** to `29°` or `30°`, keep **Convex Edges Only** checked, click **Preview** to verify the top/bottom rim ribbons, and click **Apply Chamfer**.
+> To try chamfering intricate teeth, load the **Tooth Gear**, set **Angle Threshold** to `29°` or `30°`, keep **Convex Edges Only** checked, click **Preview** to verify the top/bottom rim ribbons, and click **Apply Chamfer**.

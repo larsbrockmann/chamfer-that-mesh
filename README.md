@@ -31,7 +31,7 @@ Detailed guides and screenshots for all features are available in the [**Wiki**]
 - [**Edge Detection & Selection**](wiki/Edge-Detection-and-Selection.md) — Angle thresholds, loop chaining, and 3D viewport picking.
 - [**Bevel Profiles & Engine**](wiki/Bevel-Profiles-and-Engine.md) — Chamfer, Fillet, and Hybrid bevels with live 3D preview.
 - [**Mesh Repair & Diagnostics**](wiki/Mesh-Repair-and-Diagnostics.md) — MeshFixer, watertight repair, and loose-part cleanup.
-- [**File Formats & Sample Library**](wiki/File-Formats-and-Sample-Library.md) — STL/3MF handling and the 12 built-in test shapes.
+- [**File Formats & Sample Library**](wiki/File-Formats-and-Sample-Library.md) — STL/3MF handling and the 3 built-in demo shapes (Pyramid, Hex Nut, Tooth Gear).
 
 ## Usage
 

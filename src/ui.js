@@ -234,23 +234,10 @@ export function buildUI(callbacks) {
   const sampleSelect = document.createElement('select');
   sampleSelect.className = 'sample-select';
   sampleSelect.innerHTML = `
-    <option value="" disabled selected>Select a model...</option>
-    <optgroup label="Basic Shapes">
-      <option value="./models/cube.stl">Cube (20mm)</option>
-      <option value="./models/cylinder.stl">Cylinder (32 seg)</option>
-      <option value="./models/hex_prism.stl">Hex Prism</option>
-      <option value="./models/bracket.stl">Basic L-Bracket</option>
-      <option value="./models/box.3mf">3MF Box</option>
-    </optgroup>
-    <optgroup label="Intricate Shapes">
-      <option value="./models/stepped_pyramid.stl">Stepped Pyramid (3-Tier)</option>
-      <option value="./models/hollow_box.stl">Hollow Box (Recessed Tray)</option>
-      <option value="./models/notched_block.stl">Notched Step &amp; Channel Block</option>
-      <option value="./models/cross_block.stl">Cross / Plus Block</option>
-      <option value="./models/star_prism.stl">8-Point Star Prism</option>
-      <option value="./models/hex_nut.stl">Hex Nut (Through-Bore)</option>
-      <option value="./models/spur_gear.stl">12-Tooth Spur Gear</option>
-    </optgroup>
+    <option value="" disabled selected>Select a demo shape...</option>
+    <option value="./models/stepped_pyramid.stl">Pyramid (Stepped)</option>
+    <option value="./models/hex_nut.stl">Hex Nut</option>
+    <option value="./models/spur_gear.stl">Tooth Gear</option>
   `;
   sampleSelect.addEventListener('change', (e) => {
     if (e.target.value && callbacks.onLoadSample) {
