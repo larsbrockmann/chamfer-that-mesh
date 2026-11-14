@@ -392,6 +392,7 @@ export function buildUI(callbacks) {
   chamferSection.appendChild(previewToggleRow);
 
   const applyBtn = button('Apply Chamfer', 'btn-success');
+  applyBtn.id = 'apply-chamfer-btn';
   applyBtn.style.marginTop = '6px';
   applyBtn.addEventListener('click', () => callbacks.onApplyChamfer());
   chamferSection.appendChild(applyBtn);
@@ -658,6 +659,70 @@ export function updateMeshHealth(stats) {
   if (btnEl) {
     btnEl.classList.remove('btn-secondary');
     btnEl.classList.add('btn-warning');
+  }
+}
+
+/**
+ * Toggle the viewport processing overlay and button busy states.
+ * @param {boolean} active
+ * @param {string} [title]
+ * @param {string} [detail]
+ * @param {string} [activeBtnId] - 'apply-chamfer-btn' | 'mesh-fixer-btn'
+ */
+export function setProcessingState(
+  active,
+  title = 'Processing Mesh...',
+  detail = 'Computing geometry...',
+  activeBtnId = ''
+) {
+  const overlay = document.getElementById('processing-overlay');
+  const titleEl = document.getElementById('processing-title');
+  const detailEl = document.getElementById('processing-detail');
+
+  if (overlay) {
+    overlay.classList.toggle('visible', Boolean(active));
+    overlay.setAttribute('aria-busy', active ? 'true' : 'false');
+  }
+  if (titleEl && title) titleEl.textContent = title;
+  if (detailEl && detail !== undefined) detailEl.textContent = detail;
+
+  const applyBtn = document.getElementById('apply-chamfer-btn');
+  const fixerBtn = document.getElementById('mesh-fixer-btn');
+
+  if (active) {
+    if (applyBtn) {
+      applyBtn.disabled = true;
+      if (activeBtnId === 'apply-chamfer-btn') {
+        applyBtn.classList.add('is-busy');
+        applyBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Applying...';
+      }
+    }
+    if (fixerBtn) {
+      if (fixerBtn.dataset.prevDisabled === undefined) {
+        fixerBtn.dataset.prevDisabled = fixerBtn.disabled ? '1' : '0';
+      }
+      fixerBtn.disabled = true;
+      if (activeBtnId === 'mesh-fixer-btn') {
+        fixerBtn.classList.add('is-busy');
+        fixerBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Fixing Mesh...';
+      }
+    }
+  } else {
+    if (applyBtn) {
+      applyBtn.disabled = false;
+      applyBtn.classList.remove('is-busy');
+      applyBtn.textContent = 'Apply Chamfer';
+    }
+    if (fixerBtn) {
+      fixerBtn.classList.remove('is-busy');
+      if (fixerBtn.dataset.prevDisabled !== undefined) {
+        fixerBtn.disabled = fixerBtn.dataset.prevDisabled === '1';
+        delete fixerBtn.dataset.prevDisabled;
+      }
+      if (!fixerBtn.textContent.includes('MeshFixer')) {
+        fixerBtn.textContent = '🔧 Run MeshFixer';
+      }
+    }
   }
 }
 

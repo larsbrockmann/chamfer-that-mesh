@@ -8,7 +8,7 @@ import { detectEdges } from './edgeDetector.js';
 import { applyChamfer, previewChamfer, ChamferParams } from './chamferEngine.js';
 import { analyzeMesh, fixMesh } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
-import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState } from './ui.js';
+import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState } from './ui.js';
 
 // ---- App state ----
 let currentMesh = null;
@@ -549,9 +549,23 @@ function formatMeshFixSummary(fixRes) {
   return parts.join(', ');
 }
 
+let isProcessingMesh = false;
+
+/**
+ * Yield to the browser so DOM updates (loading overlay & spinner) paint
+ * before heavy synchronous geometry computation blocks the main thread.
+ */
+function waitForNextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      setTimeout(resolve, 16);
+    });
+  });
+}
+
 // ---- Apply chamfer ----
-function handleApplyChamfer() {
-  if (!currentMesh || !currentEdgeData) return;
+async function handleApplyChamfer() {
+  if (isProcessingMesh || !currentMesh || !currentEdgeData) return;
 
   const selectedCount = currentEdgeData.getSelectedCount();
   if (selectedCount === 0) {
@@ -559,85 +573,119 @@ function handleApplyChamfer() {
     return;
   }
 
-  // Save state before modifying geometry
-  pushUndoState();
-
-  const params = new ChamferParams(chamferWidth, chamferSegments, chamferProfile);
-  let newGeometry;
-  try {
-    newGeometry = applyChamfer(
-      currentMesh.geometry,
-      currentEdgeData,
-      params
-    );
-  } catch (err) {
-    console.error('Chamfer operation failed:', err);
-    const popped = undoStack.pop();
-    popped?.geo?.dispose();
-    syncUndoRedoUI();
-    showToast('Chamfer failed on non-manifold edge', 'is-unselected');
-    return;
-  }
-
-  let fixedNotice = '';
-  let remainingIssues = 0;
-  let manualFixHint = false;
-  const postStats = analyzeMesh(newGeometry);
-  if (!postStats.isWatertight) {
-    if (autoFixMesh) {
-      try {
-        const fixRes = fixMesh(newGeometry);
-        newGeometry.dispose();
-        newGeometry = fixRes.geometry;
-        newGeometry.computeVertexNormals();
-        newGeometry.computeBoundingBox();
-        newGeometry.computeBoundingSphere();
-        const detail = formatMeshFixSummary(fixRes);
-        if (detail) fixedNotice = ` · MeshFixer: ${detail}`;
-        remainingIssues = fixRes.afterStats.issueCount;
-      } catch (fixErr) {
-        console.warn('Auto MeshFixer failed after chamfer:', fixErr);
-        remainingIssues = postStats.issueCount;
-      }
-    } else {
-      remainingIssues = postStats.issueCount;
-      manualFixHint = true;
-    }
-  }
-
-  currentIsInitial = false;
-  syncUndoRedoUI();
-
-  // Replace geometry
-  currentMesh.geometry.dispose();
-  currentMesh.geometry = newGeometry;
-
-  // Clear edge data & preview
-  removeEdgeLines();
-  removePreview();
-  currentEdgeData = null;
-
-  // Re-detect sharp edges on the newly chamfered geometry (also calls refreshInfo)
-  handleDetectEdges();
   const label = chamferProfile === 'hybrid' ? 'Hybrid bevel' : (chamferProfile === 'fillet' ? 'Fillet' : 'Chamfer');
-  if (manualFixHint) {
-    showToast(
-      `${label} applied with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
-      'is-unselected'
+
+  isProcessingMesh = true;
+  setProcessingState(
+    true,
+    `Applying ${label}...`,
+    `Subtracting ${selectedCount} edge cutter${selectedCount === 1 ? '' : 's'} (CSG)...`,
+    'apply-chamfer-btn'
+  );
+
+  try {
+    await waitForNextPaint();
+
+    // Save state before modifying geometry
+    pushUndoState();
+
+    const params = new ChamferParams(chamferWidth, chamferSegments, chamferProfile);
+    let newGeometry;
+    try {
+      newGeometry = applyChamfer(
+        currentMesh.geometry,
+        currentEdgeData,
+        params
+      );
+    } catch (err) {
+      console.error('Chamfer operation failed:', err);
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      showToast('Chamfer failed on non-manifold edge', 'is-unselected');
+      return;
+    }
+
+    let fixedNotice = '';
+    let remainingIssues = 0;
+    let manualFixHint = false;
+    const postStats = analyzeMesh(newGeometry);
+    if (!postStats.isWatertight) {
+      if (autoFixMesh) {
+        setProcessingState(
+          true,
+          'Running MeshFixer...',
+          'Stitching open seams & filling holes...',
+          'apply-chamfer-btn'
+        );
+        await waitForNextPaint();
+
+        try {
+          const fixRes = fixMesh(newGeometry);
+          newGeometry.dispose();
+          newGeometry = fixRes.geometry;
+          newGeometry.computeVertexNormals();
+          newGeometry.computeBoundingBox();
+          newGeometry.computeBoundingSphere();
+          const detail = formatMeshFixSummary(fixRes);
+          if (detail) fixedNotice = ` · MeshFixer: ${detail}`;
+          remainingIssues = fixRes.afterStats.issueCount;
+        } catch (fixErr) {
+          console.warn('Auto MeshFixer failed after chamfer:', fixErr);
+          remainingIssues = postStats.issueCount;
+        }
+      } else {
+        remainingIssues = postStats.issueCount;
+        manualFixHint = true;
+      }
+    }
+
+    setProcessingState(
+      true,
+      'Finalizing Mesh...',
+      'Re-detecting sharp edges...',
+      'apply-chamfer-btn'
     );
-  } else if (remainingIssues > 0) {
-    showToast(
-      `${label} applied${fixedNotice} (${remainingIssues} issue(s) remain)`,
-      'is-unselected'
-    );
-  } else {
-    showToast(`${label} applied${fixedNotice}! (Ctrl+Z to undo)`, 'is-selected');
+    await waitForNextPaint();
+
+    currentIsInitial = false;
+    syncUndoRedoUI();
+
+    // Replace geometry
+    currentMesh.geometry.dispose();
+    currentMesh.geometry = newGeometry;
+
+    // Clear edge data & preview
+    removeEdgeLines();
+    removePreview();
+    currentEdgeData = null;
+
+    setProcessingState(false);
+
+    // Re-detect sharp edges on the newly chamfered geometry (also calls refreshInfo)
+    handleDetectEdges();
+    if (manualFixHint) {
+      showToast(
+        `${label} applied with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
+        'is-unselected'
+      );
+    } else if (remainingIssues > 0) {
+      showToast(
+        `${label} applied${fixedNotice} (${remainingIssues} issue(s) remain)`,
+        'is-unselected'
+      );
+    } else {
+      showToast(`${label} applied${fixedNotice}! (Ctrl+Z to undo)`, 'is-selected');
+    }
+  } finally {
+    isProcessingMesh = false;
+    setProcessingState(false);
   }
 }
 
 // ---- Manual / On-demand MeshFixer ----
-function handleRunMeshFixer() {
-  if (!currentMesh) return;
+async function handleRunMeshFixer() {
+  if (isProcessingMesh || !currentMesh) return;
 
   const before = analyzeMesh(currentMesh.geometry);
   if (before.isWatertight && before.issueCount === 0) {
@@ -646,59 +694,85 @@ function handleRunMeshFixer() {
     return;
   }
 
-  pushUndoState();
+  isProcessingMesh = true;
+  setProcessingState(
+    true,
+    'Running MeshFixer...',
+    'Welding vertices, stitching seams & filling holes...',
+    'mesh-fixer-btn'
+  );
 
-  let fixRes;
   try {
-    fixRes = fixMesh(currentMesh.geometry);
-  } catch (err) {
-    console.error('MeshFixer failed:', err);
-    const popped = undoStack.pop();
-    popped?.geo?.dispose();
-    syncUndoRedoUI();
-    showToast('MeshFixer failed on current geometry', 'is-unselected');
-    return;
-  }
+    await waitForNextPaint();
 
-  const fixedCount = fixRes.holesFilled + fixRes.edgesStitched + fixRes.degeneratesRemoved;
-  const improved = fixedCount > 0 || fixRes.afterStats.issueCount < before.issueCount;
-  if (!improved) {
-    fixRes.geometry.dispose();
-    const popped = undoStack.pop();
-    popped?.geo?.dispose();
-    syncUndoRedoUI();
-    refreshInfo();
-    showToast(
-      fixRes.afterStats.isWatertight
-        ? 'Mesh is already watertight'
-        : `No automatic fix applied (${fixRes.afterStats.issueCount} issue(s) remain)`,
-      fixRes.afterStats.isWatertight ? 'is-selected' : 'is-unselected'
+    pushUndoState();
+
+    let fixRes;
+    try {
+      fixRes = fixMesh(currentMesh.geometry);
+    } catch (err) {
+      console.error('MeshFixer failed:', err);
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      showToast('MeshFixer failed on current geometry', 'is-unselected');
+      return;
+    }
+
+    const fixedCount = fixRes.holesFilled + fixRes.edgesStitched + fixRes.degeneratesRemoved;
+    const improved = fixedCount > 0 || fixRes.afterStats.issueCount < before.issueCount;
+    if (!improved) {
+      fixRes.geometry.dispose();
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      setProcessingState(false);
+      refreshInfo();
+      showToast(
+        fixRes.afterStats.isWatertight
+          ? 'Mesh is already watertight'
+          : `No automatic fix applied (${fixRes.afterStats.issueCount} issue(s) remain)`,
+        fixRes.afterStats.isWatertight ? 'is-selected' : 'is-unselected'
+      );
+      return;
+    }
+
+    setProcessingState(
+      true,
+      'Finalizing Mesh...',
+      'Re-detecting sharp edges...',
+      'mesh-fixer-btn'
     );
-    return;
-  }
+    await waitForNextPaint();
 
-  currentIsInitial = false;
-  syncUndoRedoUI();
+    currentIsInitial = false;
+    syncUndoRedoUI();
 
-  currentMesh.geometry.dispose();
-  currentMesh.geometry = fixRes.geometry;
-  currentMesh.geometry.computeVertexNormals();
-  currentMesh.geometry.computeBoundingBox();
-  currentMesh.geometry.computeBoundingSphere();
+    currentMesh.geometry.dispose();
+    currentMesh.geometry = fixRes.geometry;
+    currentMesh.geometry.computeVertexNormals();
+    currentMesh.geometry.computeBoundingBox();
+    currentMesh.geometry.computeBoundingSphere();
 
-  removeEdgeLines();
-  removePreview();
-  currentEdgeData = null;
+    removeEdgeLines();
+    removePreview();
+    currentEdgeData = null;
 
-  handleDetectEdges();
-  const detailText = formatMeshFixSummary(fixRes) || 'vertices/normals cleaned';
-  if (fixRes.afterStats.isWatertight) {
-    showToast(`MeshFixer: watertight ✓ (${detailText})`, 'is-selected');
-  } else {
-    showToast(
-      `MeshFixer: ${detailText} (${fixRes.afterStats.issueCount} issue(s) remain)`,
-      'is-unselected'
-    );
+    setProcessingState(false);
+
+    handleDetectEdges();
+    const detailText = formatMeshFixSummary(fixRes) || 'vertices/normals cleaned';
+    if (fixRes.afterStats.isWatertight) {
+      showToast(`MeshFixer: watertight ✓ (${detailText})`, 'is-selected');
+    } else {
+      showToast(
+        `MeshFixer: ${detailText} (${fixRes.afterStats.issueCount} issue(s) remain)`,
+        'is-unselected'
+      );
+    }
+  } finally {
+    isProcessingMesh = false;
+    setProcessingState(false);
   }
 }
 

@@ -17,6 +17,13 @@
       <div id="drop-overlay">
         <div class="drop-message">Drop STL / 3MF file here</div>
       </div>
+      <div id="processing-overlay" class="processing-overlay" aria-live="polite" aria-busy="false">
+        <div class="processing-card">
+          <div class="processing-spinner" aria-hidden="true"></div>
+          <div id="processing-title" class="processing-title">Processing Mesh...</div>
+          <div id="processing-detail" class="processing-detail">Computing geometry...</div>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="./src/main.js"></script>
