@@ -149,7 +149,7 @@ let showPreview = false;
 let showEdgeHighlight = true;
 let loopSelectionMode = true; // default to loop/chain selection
 let autoFixMesh = true;
-let removeUnconnectedParts = true;
+let removeUnconnectedParts = false;
 
 let autoDetectTimer = null;
 function triggerAutoDetect(delay = 60) {

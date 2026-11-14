@@ -235,18 +235,21 @@ export function buildUI(callbacks) {
   sampleSelect.className = 'sample-select';
   sampleSelect.innerHTML = `
     <option value="" disabled selected>Select a model...</option>
-    <optgroup label="CAD & Functional Parts">
-      <option value="./models/LBracketRoundedCountersunk_w12_hole32.stl">L-Bracket (Countersunk)</option>
-      <option value="./models/anti-rotate-multiconnect-superconnect.stl">Anti-Rotate Multiconnect</option>
-      <option value="./models/anti-rotate-multiconnect-superconnect-folded.stl">Anti-Rotate Folded</option>
-      <option value="./models/5-letter-word-SCAD.stl">5-Letter Word SCAD</option>
-    </optgroup>
     <optgroup label="Basic Shapes">
       <option value="./models/cube.stl">Cube (20mm)</option>
       <option value="./models/cylinder.stl">Cylinder (32 seg)</option>
-      <option value="./models/bracket.stl">Basic L-Bracket</option>
       <option value="./models/hex_prism.stl">Hex Prism</option>
+      <option value="./models/bracket.stl">Basic L-Bracket</option>
       <option value="./models/box.3mf">3MF Box</option>
+    </optgroup>
+    <optgroup label="Intricate Shapes">
+      <option value="./models/stepped_pyramid.stl">Stepped Pyramid (3-Tier)</option>
+      <option value="./models/hollow_box.stl">Hollow Box (Recessed Tray)</option>
+      <option value="./models/notched_block.stl">Notched Step &amp; Channel Block</option>
+      <option value="./models/cross_block.stl">Cross / Plus Block</option>
+      <option value="./models/star_prism.stl">8-Point Star Prism</option>
+      <option value="./models/hex_nut.stl">Hex Nut (Through-Bore)</option>
+      <option value="./models/spur_gear.stl">12-Tooth Spur Gear</option>
     </optgroup>
   `;
   sampleSelect.addEventListener('change', (e) => {
@@ -632,7 +635,7 @@ export function buildUI(callbacks) {
   chamferSection.appendChild(autoFixRow);
 
   // Remove Unconnected Parts toggle (removes broken shards and loose floating debris)
-  const removeUnconnectedRow = toggleRow('Remove Unconnected Parts', true);
+  const removeUnconnectedRow = toggleRow('Remove Unconnected Parts', false);
   removeUnconnectedRow.title = 'Detect and remove broken shards or small unconnected debris during repair & chamfering';
   const removeUnconnectedInput = removeUnconnectedRow.querySelector('input');
   removeUnconnectedInput.addEventListener('change', () => {
