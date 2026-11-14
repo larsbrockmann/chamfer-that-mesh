@@ -439,7 +439,7 @@ function updateHoverBadge(edgeIdx) {
   }
 }
 
-function getClosestEdge(clientX, clientY) {
+function getClosestEdge(clientX, clientY, isTouch = false) {
   if (!currentEdgeData || currentEdgeData.sharpEdges.length === 0) return -1;
   const rect = canvas.getBoundingClientRect();
   const mx = clientX - rect.left;
@@ -447,7 +447,7 @@ function getClosestEdge(clientX, clientY) {
   const w = rect.width;
   const h = rect.height;
 
-  const maxTolerance = 18;
+  const maxTolerance = isTouch ? 28 : 18;
   const maxToleranceSq = maxTolerance * maxTolerance;
 
   const p1Proj = new THREE.Vector3();
@@ -509,7 +509,7 @@ const _fallbackBox = new THREE.Box3();
 /**
  * Raycast the current mesh (and visible preview meshes) or sharp edges at client coordinates.
  */
-function getMeshPointAtClientPos(clientX, clientY) {
+function getMeshPointAtClientPos(clientX, clientY, isTouch = false) {
   if (!currentMesh) return null;
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return null;
@@ -534,7 +534,7 @@ function getMeshPointAtClientPos(clientX, clientY) {
     return hits[0].point.clone();
   }
 
-  const edgeIdx = getClosestEdge(clientX, clientY);
+  const edgeIdx = getClosestEdge(clientX, clientY, isTouch);
   if (edgeIdx >= 0 && currentEdgeData?.sharpEdges[edgeIdx]) {
     const edge = currentEdgeData.sharpEdges[edgeIdx];
     const ptOnEdge = new THREE.Vector3();
@@ -576,8 +576,9 @@ canvas.addEventListener(
   'pointerdown',
   (e) => {
     if (!currentMesh) return;
-    const hitPoint = getMeshPointAtClientPos(e.clientX, e.clientY);
-    if (e.button === 0 || (e.pointerType === 'touch' && e.isPrimary)) {
+    const isTouch = e.pointerType === 'touch';
+    const hitPoint = getMeshPointAtClientPos(e.clientX, e.clientY, isTouch);
+    if (e.button === 0 || (isTouch && e.isPrimary)) {
       const pivot = hitPoint || getFallbackPivotPoint();
       setOrbitPivot(pivot, true, false);
     } else if (e.button === 1 || e.button === 2) {
@@ -602,21 +603,26 @@ canvas.addEventListener(
 );
 
 canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') return;
   if (!currentEdgeData || controls.state !== -1) return;
-  const idx = getClosestEdge(e.clientX, e.clientY);
+  const idx = getClosestEdge(e.clientX, e.clientY, false);
   currentEdgeData.setHovered(idx, loopSelectionMode);
   updateHoverBadge(idx);
   canvas.style.cursor = idx >= 0 ? 'pointer' : 'default';
 });
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch' && !e.isPrimary) return;
   pointerDownPos = { x: e.clientX, y: e.clientY };
 });
 
 canvas.addEventListener('pointerup', (e) => {
+  const isTouch = e.pointerType === 'touch';
+  if (isTouch && !e.isPrimary) return;
+  const tapThreshold = isTouch ? 14 : 6;
   const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-  if (dist < 6 && currentEdgeData) {
-    const idx = getClosestEdge(e.clientX, e.clientY);
+  if (dist < tapThreshold && currentEdgeData) {
+    const idx = getClosestEdge(e.clientX, e.clientY, isTouch);
     if (idx >= 0) {
       currentEdgeData.toggleEdge(idx, loopSelectionMode);
       updateEdgeCount(
@@ -624,7 +630,12 @@ canvas.addEventListener('pointerup', (e) => {
         currentEdgeData.getSelectedCount(),
         currentEdgeData.filteredCount
       );
-      updateHoverBadge(idx);
+      if (isTouch) {
+        currentEdgeData.setHovered(-1);
+        updateHoverBadge(-1);
+      } else {
+        updateHoverBadge(idx);
+      }
       if (showPreview) updatePreview();
     }
   }
@@ -642,6 +653,7 @@ canvas.addEventListener('pointerleave', () => {
 const resizeObserver = new ResizeObserver(() => {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
+  if (w <= 0 || h <= 0) return;
   if (currentEdgeData?.setResolution) {
     currentEdgeData.setResolution(w, h);
   }

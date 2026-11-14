@@ -131,6 +131,8 @@ export function initScene() {
   const resizeObserver = new ResizeObserver(() => {
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();

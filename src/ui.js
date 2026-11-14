@@ -35,18 +35,81 @@ export function buildUI(callbacks) {
   fileInput.id = 'file-input';
   sidebar.appendChild(fileInput);
 
-  // ---- Title ----
+  // ---- Mobile sheet handle & Title ----
+  const sheetHandle = document.createElement('button');
+  sheetHandle.type = 'button';
+  sheetHandle.id = 'mobile-sheet-handle';
+  sheetHandle.className = 'mobile-sheet-handle';
+  sheetHandle.setAttribute('aria-label', 'Toggle controls panel');
+  sheetHandle.setAttribute('aria-expanded', 'true');
+  sheetHandle.setAttribute('aria-controls', 'sidebar');
+  sidebar.appendChild(sheetHandle);
+
+  const headerRow = el('div', 'sidebar-header-row');
+  const brand = el('div', 'sidebar-brand');
   const title = el('div', 'sidebar-title', '⚡ Chamfer That Mesh');
   const subtitle = el('div', 'sidebar-subtitle', 'Best-Guess STL / 3MF Post-Processor');
+  brand.appendChild(title);
+  brand.appendChild(subtitle);
+  headerRow.appendChild(brand);
+
+  const sheetToggleBtn = document.createElement('button');
+  sheetToggleBtn.type = 'button';
+  sheetToggleBtn.id = 'mobile-sheet-toggle-btn';
+  sheetToggleBtn.className = 'mobile-sheet-toggle-btn';
+  sheetToggleBtn.textContent = '✕ Hide';
+  sheetToggleBtn.title = 'Hide controls panel to view 3D model full-screen';
+  sheetToggleBtn.setAttribute('aria-expanded', 'true');
+  sheetToggleBtn.setAttribute('aria-controls', 'sidebar');
+  headerRow.appendChild(sheetToggleBtn);
+
   const disclaimer = el(
     'div',
     'sidebar-disclaimer',
     '⚠ Heuristic mesh post-processing: operates on raw STL/3MF triangles. Outcomes may come out imprecise or broken on complex geometry.'
   );
   disclaimer.id = 'sidebar-disclaimer';
-  sidebar.appendChild(title);
-  sidebar.appendChild(subtitle);
+  sidebar.appendChild(headerRow);
   sidebar.appendChild(disclaimer);
+
+  const appEl = document.getElementById('app');
+  const viewportEl = document.getElementById('viewport');
+  let mobilePanelToggle = document.getElementById('mobile-panel-toggle');
+  if (!mobilePanelToggle && viewportEl) {
+    mobilePanelToggle = document.createElement('button');
+    mobilePanelToggle.type = 'button';
+    mobilePanelToggle.id = 'mobile-panel-toggle';
+    mobilePanelToggle.className = 'mobile-panel-toggle';
+    mobilePanelToggle.setAttribute('aria-controls', 'sidebar');
+    viewportEl.appendChild(mobilePanelToggle);
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    if (appEl) {
+      appEl.classList.toggle('sidebar-collapsed', collapsed);
+    }
+    const expandedStr = collapsed ? 'false' : 'true';
+    sheetHandle.setAttribute('aria-expanded', expandedStr);
+    sheetToggleBtn.setAttribute('aria-expanded', expandedStr);
+    if (mobilePanelToggle) {
+      mobilePanelToggle.setAttribute('aria-expanded', expandedStr);
+      mobilePanelToggle.textContent = collapsed ? '⚙ Controls' : '▼ Hide Controls';
+      mobilePanelToggle.classList.toggle('is-collapsed', collapsed);
+    }
+  }
+
+  setSidebarCollapsed(Boolean(appEl && appEl.classList.contains('sidebar-collapsed')));
+
+  const toggleSidebar = () => {
+    const isCollapsed = appEl ? appEl.classList.contains('sidebar-collapsed') : false;
+    setSidebarCollapsed(!isCollapsed);
+  };
+
+  sheetHandle.addEventListener('click', toggleSidebar);
+  sheetToggleBtn.addEventListener('click', toggleSidebar);
+  if (mobilePanelToggle) {
+    mobilePanelToggle.onclick = toggleSidebar;
+  }
 
   // ============ FILE section ============
   const fileSection = section('File');
