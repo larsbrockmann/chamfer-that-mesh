@@ -17,7 +17,7 @@ import {
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
 import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
-import { analyzeMesh, fixMesh, removeDisconnectedParts, findLooseParts } from './meshFixer.js';
+import { analyzeMesh, fixMesh, removeDisconnectedParts, findLooseParts, verifyMeshFixWithBoolDiff } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
 import {
   buildUI,
@@ -1122,13 +1122,27 @@ async function handleRunMeshFixer() {
 
     let fixRes;
     try {
-      fixRes = fixMesh(currentMesh.geometry, { removeUnconnected: removeUnconnectedParts });
+      fixRes = fixMesh(currentMesh.geometry, { removeUnconnected: removeUnconnectedParts, verifyBoolDiff: true });
     } catch (err) {
       console.error('MeshFixer failed:', err);
       const popped = undoStack.pop();
       popped?.geo?.dispose();
       syncUndoRedoUI();
       showToast('MeshFixer failed on current geometry', 'is-unselected');
+      return;
+    }
+
+    if (fixRes.verification?.rejected) {
+      fixRes.geometry.dispose();
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      setProcessingState(false);
+      refreshInfo();
+      showToast(
+        `MeshFixer rejected: ${fixRes.verification.reason || 'large unexpected parts detected'}`,
+        'is-unselected'
+      );
       return;
     }
 
@@ -1163,7 +1177,8 @@ async function handleRunMeshFixer() {
     await waitForNextPaint();
 
     finalizeReplacedGeometry(fixRes.geometry);
-    const detailText = formatMeshFixSummary(fixRes) || 'vertices/normals cleaned';
+    const verifiedText = fixRes.verification?.verified ? ' · verified clean ✓' : '';
+    const detailText = (formatMeshFixSummary(fixRes) || 'vertices/normals cleaned') + verifiedText;
     if (fixRes.afterStats.isWatertight) {
       showToast(`MeshFixer: watertight ✓ (${detailText})`, 'is-selected');
     } else {

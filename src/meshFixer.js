@@ -3,6 +3,7 @@
    repair, ear-clipping hole filling & normal orientation
    ============================================================ */
 import * as THREE from 'three';
+import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 
 /**
  * Extract raw vertex array and triangle index triples via boundary-safe
@@ -558,6 +559,12 @@ function findConnectedComponents(vertices, tris, maxAreaRatio = 0.05) {
       triIndices: comp.triIndices,
       triCount: comp.triIndices.length,
       area: comp.area,
+      minX: comp.minX,
+      maxX: comp.maxX,
+      minY: comp.minY,
+      maxY: comp.maxY,
+      minZ: comp.minZ,
+      maxZ: comp.maxZ,
       diag: Math.hypot(comp.maxX - comp.minX, comp.maxY - comp.minY, comp.maxZ - comp.minZ),
       isRemovable: false,
     });
@@ -1384,35 +1391,64 @@ export function fixMesh(geometry, options = {}) {
     return fixMesh(geometry, { ...options, weldEps: 1e-5, snapEps: 1e-5, tJuncEps: 5e-5, _retried: true });
   }
 
+  let finalGeo = fixedGeo;
+  let finalStats = afterStats;
+  let finalHoles = holesFilled;
+  let finalStitched = edgesStitched;
+  let finalDegen = degeneratesRemoved;
+  let finalParts = partsRemoved;
+
   // Run one follow-up pass when holes closed by Pass 4 unlock remaining T-junctions
   if (!afterStats.isWatertight && afterStats.issueCount < beforeStats.issueCount && !_pass2) {
-    const pass2 = fixMesh(fixedGeo, { ...options, _pass2: true });
+    const pass2 = fixMesh(fixedGeo, { ...options, _pass2: true, verifyBoolDiff: false });
     if (
       pass2.afterStats.nonManifoldEdges <= afterStats.nonManifoldEdges &&
       pass2.afterStats.issueCount <= afterStats.issueCount
     ) {
+      finalGeo = pass2.geometry;
+      finalStats = pass2.afterStats;
+      finalHoles += pass2.holesFilled;
+      finalStitched += pass2.edgesStitched;
+      finalDegen += pass2.degeneratesRemoved;
+      finalParts += (pass2.partsRemoved || 0);
       fixedGeo.dispose();
+    } else {
+      pass2.geometry.dispose();
+    }
+  }
+
+  // Pass 6: Boolean Difference Verification against original body
+  let verification = null;
+  if (options.verifyBoolDiff !== false && !_pass2 && !_retried) {
+    verification = verifyMeshFixWithBoolDiff(geometry, finalGeo, options);
+    if (verification.hasLargeNewParts && options.rejectOnLargeParts !== false) {
+      console.warn('MeshFixer generated large new parts that were not in original body! Rejecting fix:', verification.reason);
+      finalGeo.dispose();
       return {
-        geometry: pass2.geometry,
+        geometry: geometry.clone(),
         beforeStats,
-        afterStats: pass2.afterStats,
-        holesFilled: holesFilled + pass2.holesFilled,
-        edgesStitched: edgesStitched + pass2.edgesStitched,
-        degeneratesRemoved: degeneratesRemoved + pass2.degeneratesRemoved,
-        partsRemoved: partsRemoved + (pass2.partsRemoved || 0),
+        afterStats: beforeStats,
+        holesFilled: 0,
+        edgesStitched: 0,
+        degeneratesRemoved: 0,
+        partsRemoved: 0,
+        verification: {
+          ...verification,
+          rejected: true,
+        },
       };
     }
-    pass2.geometry.dispose();
   }
 
   return {
-    geometry: fixedGeo,
+    geometry: finalGeo,
     beforeStats,
-    afterStats,
-    holesFilled,
-    edgesStitched,
-    degeneratesRemoved,
-    partsRemoved,
+    afterStats: finalStats,
+    holesFilled: finalHoles,
+    edgesStitched: finalStitched,
+    degeneratesRemoved: finalDegen,
+    partsRemoved: finalParts,
+    verification,
   };
 }
 
@@ -1492,5 +1528,246 @@ export function findLooseParts(geometry, options = {}) {
     triangles: looseTris.length,
     components: removable,
     geometry: looseGeo,
+  };
+}
+
+/**
+ * Compute signed volume of non-indexed or indexed BufferGeometry triangles.
+ */
+function computeMeshVolumeFromPos(posAttr) {
+  if (!posAttr || posAttr.count < 3) return 0;
+  let vol = 0;
+  const p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3();
+  const triCount = Math.floor(posAttr.count / 3);
+  for (let i = 0; i < triCount; i++) {
+    p1.fromBufferAttribute(posAttr, i * 3);
+    p2.fromBufferAttribute(posAttr, i * 3 + 1);
+    p3.fromBufferAttribute(posAttr, i * 3 + 2);
+    vol += p1.dot(p2.cross(p3)) / 6.0;
+  }
+  return Math.abs(vol);
+}
+
+/**
+ * Compute total surface area of non-indexed BufferGeometry triangles.
+ */
+function computeMeshAreaFromPos(posAttr) {
+  if (!posAttr || posAttr.count < 3) return 0;
+  let area = 0;
+  const p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3(), cross = new THREE.Vector3();
+  const triCount = Math.floor(posAttr.count / 3);
+  for (let i = 0; i < triCount; i++) {
+    p1.fromBufferAttribute(posAttr, i * 3);
+    p2.fromBufferAttribute(posAttr, i * 3 + 1);
+    p3.fromBufferAttribute(posAttr, i * 3 + 2);
+    ab.subVectors(p2, p1);
+    ac.subVectors(p3, p1);
+    cross.crossVectors(ab, ac);
+    area += 0.5 * cross.length();
+  }
+  return area;
+}
+
+/**
+ * Verify a repaired mesh by computing its boolean difference against the original body
+ * (Fixed - Original) to detect whether large, spurious new parts or volumes were generated.
+ *
+ * @param {THREE.BufferGeometry} origGeometry - Original input body before fixing
+ * @param {THREE.BufferGeometry} fixedGeometry - Candidate repaired geometry
+ * @param {object} [options]
+ * @param {number} [options.maxVolumeRatio=0.02] - Maximum allowable volume ratio of any new part relative to original body (default 2%)
+ * @param {number} [options.maxAreaRatio=0.08] - Maximum allowable surface area ratio of any new part relative to original body (default 8%)
+ * @param {number} [options.maxDimRatio=0.35] - Maximum allowable bounding diagonal ratio (default 35%)
+ * @param {number} [options.boundExpandRatio=0.05] - Maximum tolerance for bounding box expansion (default 5%)
+ * @returns {{
+ *   verified: boolean,
+ *   hasLargeNewParts: boolean,
+ *   largePartsCount: number,
+ *   diffTriangles: number,
+ *   diffVolume: number,
+ *   diffArea: number,
+ *   largeParts: Array<object>,
+ *   reason?: string
+ * }}
+ */
+export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options = {}) {
+  const {
+    maxVolumeRatio = 0.02,
+    maxAreaRatio = 0.08,
+    maxDimRatio = 0.35,
+    boundExpandRatio = 0.05,
+  } = options;
+
+  if (!origGeometry || !fixedGeometry) {
+    return {
+      verified: true,
+      hasLargeNewParts: false,
+      largePartsCount: 0,
+      diffTriangles: 0,
+      diffVolume: 0,
+      diffArea: 0,
+      largeParts: [],
+    };
+  }
+
+  // 1. Analyze original body bounds and metrics
+  if (!origGeometry.boundingBox) origGeometry.computeBoundingBox();
+  const origBox = origGeometry.boundingBox.clone();
+  const origSize = origBox.getSize(new THREE.Vector3());
+  const origDiag = Math.max(origSize.length(), 1e-4);
+  const origPos = origGeometry.getAttribute('position');
+  const origArea = Math.max(computeMeshAreaFromPos(origPos), 1e-4);
+  const origVol = Math.max(
+    computeMeshVolumeFromPos(origPos),
+    origSize.x * origSize.y * origSize.z * 0.15,
+    1e-4
+  );
+
+  // 2. Perform CSG Boolean Difference: Fixed - Original
+  let diffGeo;
+  try {
+    const evaluator = new Evaluator();
+    evaluator.attributes = ['position', 'normal'];
+
+    const bOrig = new Brush(origGeometry.index ? origGeometry.toNonIndexed() : origGeometry.clone());
+    bOrig.updateMatrixWorld();
+    const bFixed = new Brush(fixedGeometry.index ? fixedGeometry.toNonIndexed() : fixedGeometry.clone());
+    bFixed.updateMatrixWorld();
+
+    const diffResult = evaluator.evaluate(bFixed, bOrig, SUBTRACTION);
+    diffGeo = diffResult?.geometry || null;
+  } catch (err) {
+    console.warn('verifyMeshFixWithBoolDiff: CSG difference evaluation failed, fallback to geometric bounds:', err);
+    if (!fixedGeometry.boundingBox) fixedGeometry.computeBoundingBox();
+    const fixBox = fixedGeometry.boundingBox;
+    const expandTol = Math.max(origDiag * boundExpandRatio, 0.5);
+    const boundsExceeded = (
+      fixBox.min.x < origBox.min.x - expandTol ||
+      fixBox.min.y < origBox.min.y - expandTol ||
+      fixBox.min.z < origBox.min.z - expandTol ||
+      fixBox.max.x > origBox.max.x + expandTol ||
+      fixBox.max.y > origBox.max.y + expandTol ||
+      fixBox.max.z > origBox.max.z + expandTol
+    );
+    return {
+      verified: !boundsExceeded,
+      hasLargeNewParts: boundsExceeded,
+      largePartsCount: boundsExceeded ? 1 : 0,
+      diffTriangles: 0,
+      diffVolume: 0,
+      diffArea: 0,
+      largeParts: [],
+      reason: boundsExceeded ? 'Fixed mesh expanded significantly beyond original bounding envelope' : undefined,
+    };
+  }
+
+  const diffPos = diffGeo ? diffGeo.getAttribute('position') : null;
+  const diffTriCount = diffPos ? Math.floor(diffPos.count / 3) : 0;
+
+  if (diffTriCount === 0) {
+    return {
+      verified: true,
+      hasLargeNewParts: false,
+      largePartsCount: 0,
+      diffTriangles: 0,
+      diffVolume: 0,
+      diffArea: 0,
+      largeParts: [],
+    };
+  }
+
+  diffGeo.computeBoundingBox();
+  const diffBox = diffGeo.boundingBox;
+  const diffSize = diffBox.getSize(new THREE.Vector3());
+  const diffVol = computeMeshVolumeFromPos(diffPos);
+  const diffArea = computeMeshAreaFromPos(diffPos);
+
+  // 3. Cluster diff triangles into connected components / parts
+  const { vertices: diffVertices, tris: diffTris } = extractWeldedMesh(diffGeo, 1e-4);
+  const diffComponents = findConnectedComponents(diffVertices, diffTris, 0.0);
+
+  const expandTol = Math.max(origDiag * boundExpandRatio, 0.5);
+  const largeParts = [];
+
+  const componentsToInspect = diffComponents.length > 0
+    ? diffComponents
+    : [{
+        triIndices: Array.from({ length: diffTriCount }, (_, i) => i),
+        area: diffArea,
+        minX: diffBox.min.x, maxX: diffBox.max.x,
+        minY: diffBox.min.y, maxY: diffBox.max.y,
+        minZ: diffBox.min.z, maxZ: diffBox.max.z,
+      }];
+
+  for (const comp of componentsToInspect) {
+    const compArea = comp.area || 0;
+    const dx = Math.max(comp.maxX - comp.minX, 0);
+    const dy = Math.max(comp.maxY - comp.minY, 0);
+    const dz = Math.max(comp.maxZ - comp.minZ, 0);
+    const compDiag = Math.hypot(dx, dy, dz);
+    const compThickness = Math.min(dx, dy, dz);
+
+    const compVolume = Math.min(
+      dx * dy * dz,
+      diffVol * (diffArea > 0 ? compArea / diffArea : 1.0)
+    );
+
+    const volRatio = compVolume / origVol;
+    const areaRatio = compArea / origArea;
+    const dimRatio = compDiag / origDiag;
+
+    const outOfBounds = (
+      comp.minX < origBox.min.x - expandTol ||
+      comp.minY < origBox.min.y - expandTol ||
+      comp.minZ < origBox.min.z - expandTol ||
+      comp.maxX > origBox.max.x + expandTol ||
+      comp.maxY > origBox.max.y + expandTol ||
+      comp.maxZ > origBox.max.z + expandTol
+    );
+
+    // Identify as large new part if:
+    // a) Substantial 3D volume with physical thickness (not a 2D planar hole patch); OR
+    // b) Excessive surface area expansion (> maxAreaRatio); OR
+    // c) Spans a large fraction of model diagonal with non-trivial area; OR
+    // d) Outside original bounding envelope with non-trivial area
+    const isLarge = (
+      (volRatio > maxVolumeRatio && compThickness > origDiag * 0.02) ||
+      (areaRatio > maxAreaRatio) ||
+      (dimRatio > maxDimRatio && areaRatio > maxAreaRatio * 0.5) ||
+      (outOfBounds && areaRatio > 0.015)
+    );
+
+    if (isLarge) {
+      largeParts.push({
+        triCount: comp.triIndices ? comp.triIndices.length : diffTriCount,
+        volume: compVolume,
+        area: compArea,
+        dimensions: { x: dx, y: dy, z: dz },
+        volRatio,
+        areaRatio,
+        dimRatio,
+        outOfBounds,
+      });
+    }
+  }
+
+  const hasLargeNewParts = largeParts.length > 0;
+  let reason;
+  if (hasLargeNewParts) {
+    const maxV = Math.max(...largeParts.map(p => p.volRatio));
+    const maxA = Math.max(...largeParts.map(p => p.areaRatio));
+    reason = `Detected ${largeParts.length} large new part(s) generated by fixer (max volume ratio: ${(maxV * 100).toFixed(1)}%, max area ratio: ${(maxA * 100).toFixed(1)}%)`;
+  }
+
+  return {
+    verified: !hasLargeNewParts,
+    hasLargeNewParts,
+    largePartsCount: largeParts.length,
+    diffTriangles: diffTriCount,
+    diffVolume: diffVol,
+    diffArea,
+    largeParts,
+    reason,
   };
 }
