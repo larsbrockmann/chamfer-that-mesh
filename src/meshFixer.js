@@ -1446,3 +1446,51 @@ export function removeDisconnectedParts(geometry, options = {}) {
     afterStats,
   };
 }
+
+/**
+ * Detect unconnected or loose components without modifying the geometry.
+ * Returns statistics and a BufferGeometry of the loose parts suitable for 3D viewport preview.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {object} [options]
+ * @returns {{ count: number, triangles: number, components: Array<object>, geometry: THREE.BufferGeometry|null }}
+ */
+export function findLooseParts(geometry, options = {}) {
+  const { weldEps = 1e-5, maxAreaRatio = 0.05, keepOnlyLargest = false } = options;
+  if (!geometry) {
+    return { count: 0, triangles: 0, components: [], geometry: null };
+  }
+
+  const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
+  const prunedDeg = pruneTriangles(vertices, rawTris);
+  const components = findConnectedComponents(vertices, prunedDeg.tris, maxAreaRatio);
+
+  if (components.length <= 1) {
+    return { count: 0, triangles: 0, components: [], geometry: null };
+  }
+
+  const removable = [];
+  const looseTris = [];
+
+  for (let i = 1; i < components.length; i++) {
+    const comp = components[i];
+    if (keepOnlyLargest || comp.isRemovable) {
+      removable.push(comp);
+      for (const f of comp.triIndices) {
+        looseTris.push(prunedDeg.tris[f]);
+      }
+    }
+  }
+
+  if (looseTris.length === 0) {
+    return { count: 0, triangles: 0, components: [], geometry: null };
+  }
+
+  const looseGeo = buildGeometryFromTris(vertices, looseTris);
+  return {
+    count: removable.length,
+    triangles: looseTris.length,
+    components: removable,
+    geometry: looseGeo,
+  };
+}

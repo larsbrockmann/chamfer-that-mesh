@@ -47,26 +47,33 @@ For models imported with pre-existing defects, click **Run MeshFixer** to execut
 
 ---
 
-## 3. Non-Destructive Clean Loose Parts
+## 3. Non-Destructive Clean Loose Parts & 3D Preview
 
 Many 3D models contain floating stray polygons or support fragments left behind by CAD booleans.
 
 ```
        ┌────────────────────────┐
        │                        │      . <── Stray fragment (<5% area)
-       │    Main Body Solid     │            [Removed]
+       │    Main Body Solid     │            [Highlighted & Removed]
        │   (Preserved >95%)     │
        │                        │      ┌─────┐
        └────────────────────────┘      │     │ <── Sub-assembly (>5% area)
                                        └─────┘     [Preserved]
 ```
 
-Clicking **Clean Loose Parts** (`#btn-clean-loose`) uses a conservative, non-destructive heuristic:
+### Preview Loose Parts (`#preview-parts-btn`)
+Before running any cleanup:
+- Click **`👁 Preview Loose`** to run a non-destructive component connectivity analysis.
+- If loose shards or floating islands exist, they are highlighted in the 3D viewport with **glowing crimson fill, white wireframe edges, and a bright yellow bounding box**, accompanied by a toast count.
+- If the mesh is already a unified solid body, a toast immediately confirms: `✓ No loose or unconnected parts detected (1 solid body)`.
+
+### Clean Loose Parts (`#clean-parts-btn`)
+Clicking **Clean Loose Parts** executes the conservative cleanup pass:
 - **Graph Traversal:** The mesh is decomposed into connected geometric components via vertex adjacency.
 - **Safety Filters:** A component is removed **only** if it meets both strict criteria:
   1. Its surface area is less than **$5\%$** of total mesh surface area.
   2. Its bounding box dimension is less than **$50\%$** of the overall model size.
-- **Protection for Multi-Part Meshes:** Valid multi-body assemblies, hollowed inner cavities, and dual-shell designs are preserved intact.
+- **Protection for Multi-Part Meshes:** Valid multi-body assemblies, hollowed inner cavities, and dual-shell designs are preserved intact. All operations are undoable with `Ctrl+Z`.
 
 ---
 

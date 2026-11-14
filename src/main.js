@@ -17,9 +17,9 @@ import {
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
 import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
-import { analyzeMesh, fixMesh, removeDisconnectedParts } from './meshFixer.js';
+import { analyzeMesh, fixMesh, removeDisconnectedParts, findLooseParts } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
-import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState } from './ui.js';
+import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState, setLoosePartsPreviewActive } from './ui.js';
 
 // ---- App state ----
 let currentMesh = null;
@@ -28,6 +28,8 @@ let currentIsInitial = true;
 let currentEdgeData = null;
 let edgeLinesObject = null;
 let previewGroup = null;
+let showLoosePartsPreview = false;
+let loosePartsPreviewGroup = null;
 
 // ---- History state (Undo / Redo) ----
 const MAX_HISTORY = 20;
@@ -81,6 +83,7 @@ function showToast(msg, type = 'is-selected') {
 
 function handleUndo() {
   if (!currentMesh || undoStack.length === 0) return;
+  hideLoosePartsPreview();
 
   const prevEntry = undoStack.pop();
   redoStack.push({
@@ -102,6 +105,7 @@ function handleUndo() {
 
 function handleRedo() {
   if (!currentMesh || redoStack.length === 0) return;
+  hideLoosePartsPreview();
 
   const nextEntry = redoStack.pop();
   undoStack.push({
@@ -123,6 +127,7 @@ function handleRedo() {
 
 function handleResetModel() {
   if (!currentMesh || !initialGeometry || currentIsInitial) return;
+  hideLoosePartsPreview();
 
   pushUndoState();
   currentMesh.geometry.dispose();
@@ -245,6 +250,7 @@ const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
     }
   },
   onRunMeshFixer: handleRunMeshFixer,
+  onToggleLoosePartsPreview: handleToggleLoosePartsPreview,
   onCleanUnconnectedParts: handleCleanUnconnectedParts,
   onWireframeToggle: (v) => {
     if (currentMesh) currentMesh.material.wireframe = v;
@@ -321,6 +327,7 @@ function onModelLoaded(mesh) {
   }
   removeEdgeLines();
   removePreview();
+  hideLoosePartsPreview();
 
   currentMesh = mesh;
   initialGeometry = mesh.geometry.clone();
@@ -432,6 +439,7 @@ function handleDetectEdges() {
 
   removeEdgeLines();
   removePreview();
+  hideLoosePartsPreview();
 
   const w = canvas.clientWidth || 1000;
   const h = canvas.clientHeight || 800;
@@ -735,6 +743,93 @@ function removePreview() {
   }
 }
 
+function removeLoosePartsPreview() {
+  if (loosePartsPreviewGroup) {
+    scene.remove(loosePartsPreviewGroup);
+    loosePartsPreviewGroup.traverse((child) => {
+      if (child.isMesh || child.isLineSegments) {
+        child.geometry?.dispose();
+        child.material?.dispose();
+      }
+    });
+    loosePartsPreviewGroup = null;
+  }
+}
+
+function hideLoosePartsPreview() {
+  if (showLoosePartsPreview) {
+    showLoosePartsPreview = false;
+    setLoosePartsPreviewActive(false);
+  }
+  removeLoosePartsPreview();
+}
+
+function handleToggleLoosePartsPreview() {
+  if (isProcessingMesh || !currentMesh || !currentMesh.geometry) return;
+
+  if (showLoosePartsPreview) {
+    hideLoosePartsPreview();
+    showToast('Loose parts preview hidden', 'is-unselected');
+    return;
+  }
+
+  const looseInfo = findLooseParts(currentMesh.geometry);
+  if (!looseInfo || looseInfo.count === 0 || !looseInfo.geometry) {
+    showToast('✓ No loose or unconnected parts detected (1 solid body)', 'is-selected');
+    hideLoosePartsPreview();
+    return;
+  }
+
+  showLoosePartsPreview = true;
+  setLoosePartsPreviewActive(true);
+
+  removeLoosePartsPreview();
+  loosePartsPreviewGroup = new THREE.Group();
+  loosePartsPreviewGroup.name = 'loosePartsPreview';
+
+  // Semi-translucent glowing crimson fill
+  const looseMat = new THREE.MeshStandardMaterial({
+    color: 0xff1744,
+    emissive: 0x990022,
+    emissiveIntensity: 0.8,
+    roughness: 0.25,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.88,
+    side: THREE.DoubleSide,
+    depthTest: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -6,
+  });
+  const looseMesh = new THREE.Mesh(looseInfo.geometry, looseMat);
+  looseMesh.raycast = () => {};
+  loosePartsPreviewGroup.add(looseMesh);
+
+  // White wireframe edge overlay for crisp visibility
+  const wireGeo = new THREE.WireframeGeometry(looseInfo.geometry);
+  const wireMat = new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const wire = new THREE.LineSegments(wireGeo, wireMat);
+  wire.raycast = () => {};
+  loosePartsPreviewGroup.add(wire);
+
+  // Bright yellow BoxHelper around the loose components
+  const boxHelper = new THREE.BoxHelper(looseMesh, 0xffea00);
+  boxHelper.raycast = () => {};
+  loosePartsPreviewGroup.add(boxHelper);
+
+  scene.add(loosePartsPreviewGroup);
+
+  showToast(
+    `👁 Highlighting ${looseInfo.count} loose part${looseInfo.count > 1 ? 's' : ''} (${looseInfo.triangles} tris) in glowing red`,
+    'is-selected'
+  );
+}
+
 function formatMeshFixSummary(fixRes) {
   const parts = [];
   if (fixRes.holesFilled > 0) parts.push(`${fixRes.holesFilled} hole${fixRes.holesFilled > 1 ? 's' : ''} filled`);
@@ -756,6 +851,7 @@ function finalizeReplacedGeometry(nextGeometry) {
 
   removeEdgeLines();
   removePreview();
+  hideLoosePartsPreview();
   currentEdgeData = null;
 
   setProcessingState(false);
@@ -1032,6 +1128,7 @@ async function handleRunMeshFixer() {
 // ---- Remove Broken / Unconnected Mesh Parts ----
 async function handleCleanUnconnectedParts() {
   if (isProcessingMesh || !currentMesh) return;
+  hideLoosePartsPreview();
 
   isProcessingMesh = true;
   setProcessingState(

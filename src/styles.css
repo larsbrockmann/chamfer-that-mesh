@@ -519,6 +519,13 @@ button:disabled {
   background: #4a4a6c;
 }
 
+#preview-parts-btn.active {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: #ef4444;
+  color: #fca5a5;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.35);
+}
+
 .btn-danger {
   background: var(--danger);
   color: #fff;

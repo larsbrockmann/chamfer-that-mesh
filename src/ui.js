@@ -700,6 +700,13 @@ export function buildUI(callbacks) {
   meshFixerBtn.addEventListener('click', () => callbacks.onRunMeshFixer && callbacks.onRunMeshFixer());
   fixerRow.appendChild(meshFixerBtn);
 
+  const previewPartsBtn = button('👁 Preview Loose', 'btn-secondary btn-small');
+  previewPartsBtn.id = 'preview-parts-btn';
+  previewPartsBtn.disabled = true;
+  previewPartsBtn.title = 'Highlight loose or unconnected parts in the 3D viewport before cleaning';
+  previewPartsBtn.addEventListener('click', () => callbacks.onToggleLoosePartsPreview && callbacks.onToggleLoosePartsPreview());
+  fixerRow.appendChild(previewPartsBtn);
+
   const cleanPartsBtn = button('🧹 Clean Loose Parts', 'btn-secondary btn-small');
   cleanPartsBtn.id = 'clean-parts-btn';
   cleanPartsBtn.disabled = true;
@@ -866,11 +873,29 @@ export function updateEdgeCount(detected, selected, filteredCount = 0) {
   }
 }
 
+/**
+ * Update the active toggle state of the Preview Loose Parts button.
+ */
+export function setLoosePartsPreviewActive(active) {
+  const btn = document.getElementById('preview-parts-btn');
+  if (!btn) return;
+  if (active) {
+    btn.classList.add('active');
+    btn.textContent = '👁 Hide Preview';
+    btn.title = 'Hide loose parts 3D preview';
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = '👁 Preview Loose';
+    btn.title = 'Highlight loose or unconnected parts in the 3D viewport before cleaning';
+  }
+}
+
 export function updateMeshHealth(stats) {
   const infoEl = document.getElementById('info-mesh-health');
   const bannerEl = document.getElementById('mesh-health-banner');
   const btnEl = document.getElementById('mesh-fixer-btn');
   const cleanBtnEl = document.getElementById('clean-parts-btn');
+  const previewBtnEl = document.getElementById('preview-parts-btn');
 
   if (!stats) {
     if (infoEl) {
@@ -881,7 +906,7 @@ export function updateMeshHealth(stats) {
       bannerEl.classList.remove('health-ok', 'health-warn');
       bannerEl.textContent = 'Mesh status: -';
     }
-    for (const b of [btnEl, cleanBtnEl]) {
+    for (const b of [btnEl, cleanBtnEl, previewBtnEl]) {
       if (b) {
         b.disabled = true;
         b.classList.remove('btn-warning');
@@ -893,6 +918,7 @@ export function updateMeshHealth(stats) {
 
   if (btnEl) btnEl.disabled = false;
   if (cleanBtnEl) cleanBtnEl.disabled = false;
+  if (previewBtnEl) previewBtnEl.disabled = false;
 
   if (stats.isWatertight) {
     if (infoEl) {
@@ -988,6 +1014,7 @@ export function setProcessingState(
   const overlayStopBtn = document.getElementById('processing-stop-btn');
   const secondaryBtns = [
     { id: 'mesh-fixer-btn', busyLabel: 'Fixing Mesh...', defaultLabel: '🔧 Run MeshFixer' },
+    { id: 'preview-parts-btn', busyLabel: 'Previewing...', defaultLabel: '👁 Preview Loose' },
     { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Loose Parts' },
   ];
 
