@@ -501,7 +501,7 @@ function handleDetectEdges(options = {}) {
 
   if (currentEdgeData.lineSegments) {
     edgeLinesObject = currentEdgeData.lineSegments;
-    edgeLinesObject.visible = showEdgeHighlight && !options.hideHighlights;
+    edgeLinesObject.visible = showEdgeHighlight;
     scene.add(edgeLinesObject);
   }
 
@@ -907,16 +907,11 @@ function finalizeReplacedGeometry(nextGeometry, options = {}) {
     // Disable preview so the user isn't immediately shown the next bevel preview
     showPreview = false;
     setPreviewToggleUI(false);
-
-    // Disable edge highlight overlay so user sees their clean finished part
-    showEdgeHighlight = false;
-    setEdgeHighlightToggleUI(false);
-
-    // Detect edges on the new geometry, but deselect all and hide highlights for a clean inspection view
-    handleDetectEdges({ deselectAll: true, hideHighlights: true });
-  } else {
-    handleDetectEdges();
   }
+
+  // Keep edge highlight always visible
+  ensureEdgeHighlightVisible();
+  handleDetectEdges();
 }
 
 let isProcessingMesh = false;
