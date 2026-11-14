@@ -1235,13 +1235,262 @@ function harmonizeNormals(vertices, tris) {
   return out;
 }
 
+export function createAbortError() {
+  const err = new Error('MeshFixer operation aborted by user');
+  err.name = 'AbortError';
+  return err;
+}
+
+/**
+ * Async version of fixMesh that yields to the browser event loop between passes and hole loop
+ * triangulations, honoring an AbortSignal so the Stop button or Esc key remains responsive.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {object} [options]
+ * @returns {Promise<{ geometry: THREE.BufferGeometry, beforeStats: object, afterStats: object, holesFilled: number, edgesStitched: number, degeneratesRemoved: number, partsRemoved: number, verification: object }>}
+ */
+export async function fixMeshAsync(geometry, options = {}) {
+  const {
+    weldEps = 1e-4,
+    snapEps = 1e-2,
+    tJuncEps = 1e-4,
+    maxHoleVertices = 150,
+    removeUnconnected = false,
+    _retried = false,
+    _pass2 = false,
+    signal,
+    onProgress,
+  } = options;
+
+  if (signal?.aborted) throw createAbortError();
+
+  const yieldPoint = async (msg) => {
+    if (signal?.aborted) throw createAbortError();
+    if (msg && onProgress) onProgress(msg);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) throw createAbortError();
+  };
+
+  const beforeStats = analyzeMesh(geometry);
+
+  await yieldPoint('Pass 1: Welding vertices & pruning degenerates...');
+
+  // Pass 1: Vertex welding + degenerate/duplicate, stray non-manifold fin & loose part pruning
+  const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
+  const pruned1 = pruneTriangles(vertices, rawTris);
+  const finPruned = pruneNonManifoldFins(vertices, pruned1.tris);
+  let tris = finPruned.tris;
+  let degeneratesRemoved = pruned1.removed + finPruned.removed;
+  let partsRemoved = 0;
+
+  if (removeUnconnected) {
+    const prunedParts1 = pruneDisconnectedParts(vertices, tris);
+    tris = prunedParts1.tris;
+    partsRemoved += prunedParts1.partsRemoved;
+    degeneratesRemoved += prunedParts1.trianglesRemoved;
+  }
+
+  await yieldPoint('Pass 2: Stitching T-junctions & aligning edge splits...');
+
+  // Pass 2: Manifold-guarded multi-vertex T-junction stitching FIRST
+  const tJunc1 = stitchTJunctions(vertices, tris, tJuncEps);
+  tris = tJunc1.tris;
+  let edgesStitched = tJunc1.stitched;
+
+  await yieldPoint('Pass 3: Snapping open boundary seams...');
+
+  // Pass 3: Cautious boundary seam snapping (never increases non-manifold edges) + cleanup
+  const snapped = snapOpenBoundarySeams(vertices, tris, snapEps);
+  tris = snapped.tris;
+  edgesStitched += snapped.snappedCount;
+
+  const pruned2 = pruneTriangles(vertices, tris);
+  tris = pruned2.tris;
+  degeneratesRemoved += pruned2.removed;
+
+  // Follow-up T-junction pass after any seam snaps
+  const tJunc2 = stitchTJunctions(vertices, tris, tJuncEps);
+  tris = tJunc2.tris;
+  edgesStitched += tJunc2.stitched;
+
+  await yieldPoint('Pass 4: Tracing and triangulating hole loops...');
+
+  // Pass 4: Manifold-guarded hole boundary loop triangulation
+  let holesFilled = 0;
+  const topo = buildTopology(vertices, tris);
+  if (topo.openHalfEdges.length > 0) {
+    const loops = traceHoleLoops(vertices, topo.openHalfEdges);
+    const { ec, hc, triSet } = buildManifoldMaps(tris);
+    const addedTris = [];
+    const degenPairs = [];
+
+    for (let loopIdx = 0; loopIdx < loops.length; loopIdx++) {
+      if (loopIdx % 3 === 0) {
+        await yieldPoint(`Pass 4: Triangulating holes (${loopIdx + 1} / ${loops.length})...`);
+      }
+      const loopInfo = loops[loopIdx];
+      if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
+        const patch = triangulateHoleLoop(vertices, loopInfo.vertices);
+        const loopNormal = loopInfo.vertices.length > 4
+          ? computeNewellNormal(loopInfo.vertices.map((idx) => vertices[idx]))
+          : null;
+        let addedForLoop = 0;
+
+        for (const tri of patch) {
+          const [pa, pb, pc] = tri;
+          if (isDegenerateTri(vertices, pa, pb, pc)) {
+            const triEdges = [
+              [pa, pb, vertices[pa].distanceToSquared(vertices[pb])],
+              [pb, pc, vertices[pb].distanceToSquared(vertices[pc])],
+              [pc, pa, vertices[pc].distanceToSquared(vertices[pa])],
+            ].sort((e1, e2) => e1[2] - e2[2]);
+            degenPairs.push([triEdges[0][0], triEdges[0][1]], [triEdges[1][0], triEdges[1][1]]);
+            continue;
+          }
+          if (loopNormal) {
+            const nCap = computeUnitNormal(vertices[pa], vertices[pb], vertices[pc]);
+            if (!nCap || nCap.dot(loopNormal) < 0.85) continue;
+          }
+          const tk = canonicalTriKey(pa, pb, pc);
+          if (triSet.has(tk)) continue;
+
+          let safe = true;
+          for (const [pu, pv] of [[pa, pb], [pb, pc], [pc, pa]]) {
+            if ((ec.get(edgeKey(pu, pv)) || 0) + 1 > 2 || (hc.get(`${pu}->${pv}`) || 0) > 0) {
+              safe = false;
+              break;
+            }
+          }
+          if (!safe) continue;
+
+          triSet.add(tk);
+          for (const [pu, pv] of [[pa, pb], [pb, pc], [pc, pa]]) {
+            const ek = edgeKey(pu, pv);
+            ec.set(ek, (ec.get(ek) || 0) + 1);
+            const hk = `${pu}->${pv}`;
+            hc.set(hk, (hc.get(hk) || 0) + 1);
+          }
+          addedTris.push(tri);
+          addedForLoop++;
+        }
+
+        if (addedForLoop > 0) holesFilled++;
+      }
+    }
+
+    if (addedTris.length > 0) {
+      tris = tris.concat(addedTris);
+    }
+    if (degenPairs.length > 0) {
+      const collapsed = tryCollapseOpenVertices(vertices, tris, degenPairs);
+      tris = collapsed.tris;
+      edgesStitched += collapsed.collapsedCount;
+      if (collapsed.collapsedCount > 0) holesFilled += collapsed.collapsedCount;
+    }
+  }
+
+  // Post-hole-fill cleanup for any newly exposed degenerate, non-manifold slivers, or loose shards
+  const postHolePruned = pruneTriangles(vertices, tris);
+  const postHoleFins = pruneNonManifoldFins(vertices, postHolePruned.tris);
+  tris = postHoleFins.tris;
+  degeneratesRemoved += postHolePruned.removed + postHoleFins.removed;
+  if (removeUnconnected) {
+    const prunedParts2 = pruneDisconnectedParts(vertices, tris);
+    tris = prunedParts2.tris;
+    partsRemoved += prunedParts2.partsRemoved;
+    degeneratesRemoved += prunedParts2.trianglesRemoved;
+  }
+
+  await yieldPoint('Pass 5: Harmonizing outward surface normals...');
+
+  // Pass 5: Consistent outward normal winding (guard against increasing non-manifold edges)
+  const preHarmTopo = buildTopology(vertices, tris);
+  const harmonized = harmonizeNormals(vertices, tris);
+  const postHarmTopo = buildTopology(vertices, harmonized);
+  if (postHarmTopo.nonManifoldEdges <= preHarmTopo.nonManifoldEdges) {
+    tris = harmonized;
+  }
+
+  // Build non-indexed BufferGeometry
+  const fixedGeo = buildGeometryFromTris(vertices, tris);
+  const afterStats = analyzeMesh(fixedGeo);
+
+  // If coarse initial weld introduced extra non-manifold edges, retry once at tighter weldEps
+  if (afterStats.nonManifoldEdges > beforeStats.nonManifoldEdges && !_retried && weldEps > 1e-5) {
+    fixedGeo.dispose();
+    return fixMeshAsync(geometry, { ...options, weldEps: 1e-5, snapEps: 1e-5, tJuncEps: 5e-5, _retried: true, signal, onProgress });
+  }
+
+  let finalGeo = fixedGeo;
+  let finalStats = afterStats;
+  let finalHoles = holesFilled;
+  let finalStitched = edgesStitched;
+  let finalDegen = degeneratesRemoved;
+  let finalParts = partsRemoved;
+
+  // Run one follow-up pass when holes closed by Pass 4 unlock remaining T-junctions
+  if (!afterStats.isWatertight && afterStats.issueCount < beforeStats.issueCount && !_pass2) {
+    await yieldPoint('Follow-up pass: Healing residual seams...');
+    const pass2 = await fixMeshAsync(fixedGeo, { ...options, _pass2: true, verifyBoolDiff: false, signal, onProgress });
+    if (
+      pass2.afterStats.nonManifoldEdges <= afterStats.nonManifoldEdges &&
+      pass2.afterStats.issueCount <= afterStats.issueCount
+    ) {
+      finalGeo = pass2.geometry;
+      finalStats = pass2.afterStats;
+      finalHoles += pass2.holesFilled;
+      finalStitched += pass2.edgesStitched;
+      finalDegen += pass2.degeneratesRemoved;
+      finalParts += (pass2.partsRemoved || 0);
+      fixedGeo.dispose();
+    } else {
+      pass2.geometry.dispose();
+    }
+  }
+
+  // Pass 6: Boolean Difference Verification against original body
+  let verification = null;
+  if (options.verifyBoolDiff !== false && !_pass2 && !_retried) {
+    await yieldPoint('Pass 6: Verifying manifold geometry against original body...');
+    verification = verifyMeshFixWithBoolDiff(geometry, finalGeo, options);
+    if (verification.hasLargeNewParts && options.rejectOnLargeParts !== false) {
+      console.warn('MeshFixer generated large new parts that were not in original body! Rejecting fix:', verification.reason);
+      finalGeo.dispose();
+      return {
+        geometry: geometry.clone(),
+        beforeStats,
+        afterStats: beforeStats,
+        holesFilled: 0,
+        edgesStitched: 0,
+        degeneratesRemoved: 0,
+        partsRemoved: 0,
+        verification: {
+          ...verification,
+          rejected: true,
+        },
+      };
+    }
+  }
+
+  return {
+    geometry: finalGeo,
+    beforeStats,
+    afterStats: finalStats,
+    holesFilled: finalHoles,
+    edgesStitched: finalStitched,
+    degeneratesRemoved: finalDegen,
+    partsRemoved: finalParts,
+    verification,
+  };
+}
+
 /**
  * Repair holes, T-junctions, micro-seams, degenerate faces, broken shards, and winding issues
  * in a BufferGeometry.
  *
  * @param {THREE.BufferGeometry} geometry
  * @param {object} [options]
- * @returns {{ geometry: THREE.BufferGeometry, beforeStats: object, afterStats: object, holesFilled: number, edgesStitched: number, degeneratesRemoved: number, partsRemoved: number }}
+ * @returns {{ geometry: THREE.BufferGeometry, beforeStats: object, afterStats: object, holesFilled: number, edgesStitched: number, degeneratesRemoved: number, partsRemoved: number, verification?: object }}
  */
 export function fixMesh(geometry, options = {}) {
   const {

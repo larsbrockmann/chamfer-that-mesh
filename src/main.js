@@ -17,7 +17,14 @@ import {
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
 import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
-import { analyzeMesh, fixMesh, removeDisconnectedParts, findLooseParts, verifyMeshFixWithBoolDiff } from './meshFixer.js';
+import {
+  analyzeMesh,
+  fixMesh,
+  fixMeshAsync,
+  removeDisconnectedParts,
+  findLooseParts,
+  verifyMeshFixWithBoolDiff,
+} from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
 import {
   buildUI,
@@ -918,7 +925,7 @@ function handleStopProcessing() {
   if (!isProcessingMesh || !activeAbortController) return;
   activeAbortController.abort();
   const detailEl = document.getElementById('processing-detail');
-  if (detailEl) detailEl.textContent = 'Aborting after current CSG batch...';
+  if (detailEl) detailEl.textContent = 'Stopping operation...';
   for (const id of ['processing-stop-btn', 'stop-chamfer-btn']) {
     const btn = document.getElementById(id);
     if (btn) {
@@ -1037,13 +1044,24 @@ async function handleApplyChamfer() {
         }
 
         try {
-          const fixRes = fixMesh(newGeometry, { removeUnconnected: removeUnconnectedParts });
+          const fixRes = await fixMeshAsync(newGeometry, {
+            removeUnconnected: removeUnconnectedParts,
+            signal,
+            onProgress: (msg) => {
+              const detailEl = document.getElementById('processing-detail');
+              if (detailEl) detailEl.textContent = msg;
+            },
+          });
           newGeometry.dispose();
           newGeometry = fixRes.geometry;
           const detail = formatMeshFixSummary(fixRes);
           if (detail) fixedNotice = ` · MeshFixer: ${detail}`;
           remainingIssues = fixRes.afterStats.issueCount;
         } catch (fixErr) {
+          if (fixErr?.name === 'AbortError' || signal.aborted) {
+            abortOperation();
+            return;
+          }
           console.warn('Auto MeshFixer failed after chamfer:', fixErr);
           remainingIssues = postStats.issueCount;
         }
@@ -1108,6 +1126,9 @@ async function handleRunMeshFixer() {
   }
 
   isProcessingMesh = true;
+  activeAbortController = new AbortController();
+  const signal = activeAbortController.signal;
+
   setProcessingState(
     true,
     'Running MeshFixer...',
@@ -1115,20 +1136,50 @@ async function handleRunMeshFixer() {
     'mesh-fixer-btn'
   );
 
+  const abortOperation = () => {
+    const popped = undoStack.pop();
+    popped?.geo?.dispose();
+    syncUndoRedoUI();
+    setProcessingState(false);
+    refreshInfo();
+    showToast('⏹ MeshFixer stopped — mesh unchanged', 'is-unselected');
+  };
+
   try {
     await waitForNextPaint();
+    if (signal.aborted) {
+      abortOperation();
+      return;
+    }
 
     pushUndoState();
 
     let fixRes;
     try {
-      fixRes = fixMesh(currentMesh.geometry, { removeUnconnected: removeUnconnectedParts, verifyBoolDiff: true });
+      fixRes = await fixMeshAsync(currentMesh.geometry, {
+        removeUnconnected: removeUnconnectedParts,
+        verifyBoolDiff: true,
+        signal,
+        onProgress: (msg) => {
+          const detailEl = document.getElementById('processing-detail');
+          if (detailEl) detailEl.textContent = msg;
+        },
+      });
     } catch (err) {
+      if (err?.name === 'AbortError' || signal.aborted) {
+        abortOperation();
+        return;
+      }
       console.error('MeshFixer failed:', err);
       const popped = undoStack.pop();
       popped?.geo?.dispose();
       syncUndoRedoUI();
       showToast('MeshFixer failed on current geometry', 'is-unselected');
+      return;
+    }
+
+    if (signal.aborted) {
+      abortOperation();
       return;
     }
 
@@ -1175,6 +1226,10 @@ async function handleRunMeshFixer() {
       'mesh-fixer-btn'
     );
     await waitForNextPaint();
+    if (signal.aborted) {
+      abortOperation();
+      return;
+    }
 
     finalizeReplacedGeometry(fixRes.geometry);
     const verifiedText = fixRes.verification?.verified ? ' · verified clean ✓' : '';
@@ -1188,6 +1243,7 @@ async function handleRunMeshFixer() {
       );
     }
   } finally {
+    activeAbortController = null;
     isProcessingMesh = false;
     setProcessingState(false);
   }
@@ -1199,6 +1255,9 @@ async function handleCleanUnconnectedParts() {
   hideLoosePartsPreview();
 
   isProcessingMesh = true;
+  activeAbortController = new AbortController();
+  const signal = activeAbortController.signal;
+
   setProcessingState(
     true,
     'Cleaning Loose Parts...',
@@ -1208,6 +1267,12 @@ async function handleCleanUnconnectedParts() {
 
   try {
     await waitForNextPaint();
+    if (signal.aborted) {
+      isProcessingMesh = false;
+      setProcessingState(false);
+      showToast('⏹ Clean operation stopped', 'is-unselected');
+      return;
+    }
 
     pushUndoState();
 
@@ -1240,6 +1305,7 @@ async function handleCleanUnconnectedParts() {
       : `Removed ${res.trianglesRemoved} broken sliver triangle${res.trianglesRemoved > 1 ? 's' : ''} (Ctrl+Z to undo)`;
     showToast(msg, 'is-selected');
   } finally {
+    activeAbortController = null;
     isProcessingMesh = false;
     setProcessingState(false);
   }
