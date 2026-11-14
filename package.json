@@ -1,0 +1,37 @@
+{
+  "name": "chamfer-that-mesh",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Interactive browser-based 3D mesh edge chamfering, filleting, and hybrid beveling studio for STL and 3MF models.",
+  "homepage": "https://larsbrockmann.github.io/chamfer-that-mesh/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/larsbrockmann/chamfer-that-mesh.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "3d-printing",
+    "stl",
+    "3mf",
+    "chamfer",
+    "fillet",
+    "bevel",
+    "threejs",
+    "csg",
+    "mesh-processing",
+    "cad"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.170.0",
+    "three-bvh-csg": "^0.0.16"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
