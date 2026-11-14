@@ -443,6 +443,15 @@ export function buildUI(callbacks) {
   });
   chamferSection.appendChild(autoFixRow);
 
+  // Remove Unconnected Parts toggle (removes broken shards and loose floating debris)
+  const removeUnconnectedRow = toggleRow('Remove Unconnected Parts', true);
+  removeUnconnectedRow.title = 'Detect and remove broken shards or small unconnected debris during repair & chamfering';
+  const removeUnconnectedInput = removeUnconnectedRow.querySelector('input');
+  removeUnconnectedInput.addEventListener('change', () => {
+    if (callbacks.onRemoveUnconnectedToggle) callbacks.onRemoveUnconnectedToggle(removeUnconnectedInput.checked);
+  });
+  chamferSection.appendChild(removeUnconnectedRow);
+
   const healthBanner = el('div', 'mesh-health-banner');
   healthBanner.id = 'mesh-health-banner';
   healthBanner.textContent = 'Mesh status: -';
@@ -456,6 +465,13 @@ export function buildUI(callbacks) {
   meshFixerBtn.title = 'Seal holes, stitch open seams, remove degenerate triangles & fix normals (undoable)';
   meshFixerBtn.addEventListener('click', () => callbacks.onRunMeshFixer && callbacks.onRunMeshFixer());
   fixerRow.appendChild(meshFixerBtn);
+
+  const cleanPartsBtn = button('🧹 Clean Loose Parts', 'btn-secondary btn-small');
+  cleanPartsBtn.id = 'clean-parts-btn';
+  cleanPartsBtn.disabled = true;
+  cleanPartsBtn.title = 'Remove broken shards and unconnected loose mesh components (undoable)';
+  cleanPartsBtn.addEventListener('click', () => callbacks.onCleanUnconnectedParts && callbacks.onCleanUnconnectedParts());
+  fixerRow.appendChild(cleanPartsBtn);
   chamferSection.appendChild(fixerRow);
 
   sidebar.appendChild(chamferSection);
@@ -596,6 +612,7 @@ export function updateMeshHealth(stats) {
   const infoEl = document.getElementById('info-mesh-health');
   const bannerEl = document.getElementById('mesh-health-banner');
   const btnEl = document.getElementById('mesh-fixer-btn');
+  const cleanBtnEl = document.getElementById('clean-parts-btn');
 
   if (!stats) {
     if (infoEl) {
@@ -606,17 +623,18 @@ export function updateMeshHealth(stats) {
       bannerEl.classList.remove('health-ok', 'health-warn');
       bannerEl.textContent = 'Mesh status: -';
     }
-    if (btnEl) {
-      btnEl.disabled = true;
-      btnEl.classList.remove('btn-warning');
-      btnEl.classList.add('btn-secondary');
+    for (const b of [btnEl, cleanBtnEl]) {
+      if (b) {
+        b.disabled = true;
+        b.classList.remove('btn-warning');
+        b.classList.add('btn-secondary');
+      }
     }
     return;
   }
 
-  if (btnEl) {
-    btnEl.disabled = false;
-  }
+  if (btnEl) btnEl.disabled = false;
+  if (cleanBtnEl) cleanBtnEl.disabled = false;
 
   if (stats.isWatertight) {
     if (infoEl) {
@@ -628,9 +646,11 @@ export function updateMeshHealth(stats) {
       bannerEl.classList.add('health-ok');
       bannerEl.textContent = '✓ Watertight manifold mesh (0 issues)';
     }
-    if (btnEl) {
-      btnEl.classList.remove('btn-warning');
-      btnEl.classList.add('btn-secondary');
+    for (const b of [btnEl, cleanBtnEl]) {
+      if (b) {
+        b.classList.remove('btn-warning');
+        b.classList.add('btn-secondary');
+      }
     }
     return;
   }
@@ -654,6 +674,12 @@ export function updateMeshHealth(stats) {
     shortParts.push(`${stats.degenerateTriangles} deg.`);
     detailParts.push(`${stats.degenerateTriangles} degenerate`);
   }
+  if (stats.disconnectedParts > 0) {
+    shortParts.push(`${stats.disconnectedParts} loose`);
+    detailParts.push(
+      `${stats.disconnectedParts} unconnected part${stats.disconnectedParts > 1 ? 's' : ''}`
+    );
+  }
 
   if (infoEl) {
     infoEl.textContent = shortParts.join(', ') || `${stats.issueCount} issues`;
@@ -667,6 +693,11 @@ export function updateMeshHealth(stats) {
   if (btnEl) {
     btnEl.classList.remove('btn-secondary');
     btnEl.classList.add('btn-warning');
+  }
+  if (cleanBtnEl) {
+    const hasLoose = (stats.disconnectedParts || 0) > 0;
+    cleanBtnEl.classList.toggle('btn-warning', hasLoose);
+    cleanBtnEl.classList.toggle('btn-secondary', !hasLoose);
   }
 }
 
@@ -695,7 +726,10 @@ export function setProcessingState(
   if (detailEl && detail !== undefined) detailEl.textContent = detail;
 
   const applyBtn = document.getElementById('apply-chamfer-btn');
-  const fixerBtn = document.getElementById('mesh-fixer-btn');
+  const secondaryBtns = [
+    { id: 'mesh-fixer-btn', busyLabel: 'Fixing Mesh...', defaultLabel: '🔧 Run MeshFixer' },
+    { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Loose Parts' },
+  ];
 
   if (active) {
     if (applyBtn) {
@@ -705,14 +739,16 @@ export function setProcessingState(
         applyBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Applying...';
       }
     }
-    if (fixerBtn) {
-      if (fixerBtn.dataset.prevDisabled === undefined) {
-        fixerBtn.dataset.prevDisabled = fixerBtn.disabled ? '1' : '0';
+    for (const item of secondaryBtns) {
+      const btn = document.getElementById(item.id);
+      if (!btn) continue;
+      if (btn.dataset.prevDisabled === undefined) {
+        btn.dataset.prevDisabled = btn.disabled ? '1' : '0';
       }
-      fixerBtn.disabled = true;
-      if (activeBtnId === 'mesh-fixer-btn') {
-        fixerBtn.classList.add('is-busy');
-        fixerBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Fixing Mesh...';
+      btn.disabled = true;
+      if (activeBtnId === item.id) {
+        btn.classList.add('is-busy');
+        btn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span>${item.busyLabel}`;
       }
     }
   } else {
@@ -721,14 +757,16 @@ export function setProcessingState(
       applyBtn.classList.remove('is-busy');
       applyBtn.textContent = 'Apply Chamfer';
     }
-    if (fixerBtn) {
-      fixerBtn.classList.remove('is-busy');
-      if (fixerBtn.dataset.prevDisabled !== undefined) {
-        fixerBtn.disabled = fixerBtn.dataset.prevDisabled === '1';
-        delete fixerBtn.dataset.prevDisabled;
+    for (const item of secondaryBtns) {
+      const btn = document.getElementById(item.id);
+      if (!btn) continue;
+      btn.classList.remove('is-busy');
+      if (btn.dataset.prevDisabled !== undefined) {
+        btn.disabled = btn.dataset.prevDisabled === '1';
+        delete btn.dataset.prevDisabled;
       }
-      if (!fixerBtn.textContent.includes('MeshFixer')) {
-        fixerBtn.textContent = '🔧 Run MeshFixer';
+      if (!btn.textContent.includes(item.defaultLabel.slice(2).trim())) {
+        btn.textContent = item.defaultLabel;
       }
     }
   }

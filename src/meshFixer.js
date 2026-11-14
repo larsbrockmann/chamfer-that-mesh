@@ -241,10 +241,10 @@ function traceHoleLoops(vertices, openHalfEdges) {
 
 /**
  * Analyze a BufferGeometry for open boundary holes, non-manifold edges,
- * and degenerate triangles.
+ * degenerate triangles, and broken or unconnected mesh parts.
  *
  * @param {THREE.BufferGeometry} geometry
- * @returns {{ openEdges: number, holeLoops: number, nonManifoldEdges: number, degenerateTriangles: number, isWatertight: boolean, issueCount: number }}
+ * @returns {{ openEdges: number, holeLoops: number, nonManifoldEdges: number, degenerateTriangles: number, disconnectedParts: number, disconnectedTriangles: number, isWatertight: boolean, issueCount: number }}
  */
 export function analyzeMesh(geometry) {
   if (!geometry || !geometry.getAttribute('position')) {
@@ -253,6 +253,8 @@ export function analyzeMesh(geometry) {
       holeLoops: 0,
       nonManifoldEdges: 0,
       degenerateTriangles: 0,
+      disconnectedParts: 0,
+      disconnectedTriangles: 0,
       isWatertight: true,
       issueCount: 0,
     };
@@ -263,13 +265,24 @@ export function analyzeMesh(geometry) {
   const loops = traceHoleLoops(vertices, topo.openHalfEdges);
   const closedLoops = loops.filter((l) => l.closed).length;
   const holeLoops = closedLoops > 0 ? closedLoops : (topo.openEdges > 0 ? loops.length : 0);
-  const issueCount = topo.openEdges + topo.nonManifoldEdges + topo.degenerateTriangles;
+  const components = findConnectedComponents(vertices, tris);
+  const removable = components.filter((c) => c.isRemovable);
+  const disconnectedParts = removable.length;
+  let disconnectedTriangles = 0;
+  for (const c of removable) disconnectedTriangles += c.triCount;
+  const issueCount =
+    topo.openEdges +
+    topo.nonManifoldEdges +
+    topo.degenerateTriangles +
+    disconnectedParts;
 
   return {
     openEdges: topo.openEdges,
     holeLoops,
     nonManifoldEdges: topo.nonManifoldEdges,
     degenerateTriangles: topo.degenerateTriangles,
+    disconnectedParts,
+    disconnectedTriangles,
     isWatertight: issueCount === 0,
     issueCount,
   };
@@ -473,6 +486,188 @@ function computeTriArea(vertices, a, b, c) {
   const cy = abz * acx - abx * acz;
   const cz = abx * acy - aby * acx;
   return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+}
+
+/**
+ * Identify connected triangle components across valid manifold edges and mark
+ * broken shards or small unconnected leftovers as removable.
+ */
+function findConnectedComponents(vertices, tris, maxAreaRatio = 0.20) {
+  if (!tris || tris.length === 0) return [];
+
+  const valid = new Uint8Array(tris.length);
+  const ec = new Map();
+  const hc = new Map();
+  const edgeTris = new Map();
+
+  for (let f = 0; f < tris.length; f++) {
+    const [a, b, c] = tris[f];
+    if (isDegenerateTri(vertices, a, b, c)) continue;
+    valid[f] = 1;
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+      const ek = edgeKey(u, v);
+      ec.set(ek, (ec.get(ek) || 0) + 1);
+      hc.set(`${u}->${v}`, (hc.get(`${u}->${v}`) || 0) + 1);
+      if (!edgeTris.has(ek)) edgeTris.set(ek, []);
+      edgeTris.get(ek).push(f);
+    }
+  }
+
+  const visited = new Uint8Array(tris.length);
+  const components = [];
+
+  for (let seed = 0; seed < tris.length; seed++) {
+    if (!valid[seed] || visited[seed]) continue;
+    visited[seed] = 1;
+
+    const triIndices = [seed];
+    const queue = [seed];
+    let head = 0;
+    let area = 0;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    const localEc = new Map();
+    const localHc = new Map();
+
+    while (head < queue.length) {
+      const f = queue[head++];
+      const [a, b, c] = tris[f];
+      area += computeTriArea(vertices, a, b, c);
+
+      for (const vi of [a, b, c]) {
+        const p = vertices[vi];
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.z < minZ) minZ = p.z;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+        if (p.z > maxZ) maxZ = p.z;
+      }
+
+      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+        const ek = edgeKey(u, v);
+        localEc.set(ek, (localEc.get(ek) || 0) + 1);
+        localHc.set(`${u}->${v}`, (localHc.get(`${u}->${v}`) || 0) + 1);
+
+        if (
+          ec.get(ek) === 2 &&
+          hc.get(`${u}->${v}`) === 1 &&
+          hc.get(`${v}->${u}`) === 1
+        ) {
+          const adj = edgeTris.get(ek);
+          if (!adj) continue;
+          for (const nbr of adj) {
+            if (!visited[nbr]) {
+              visited[nbr] = 1;
+              triIndices.push(nbr);
+              queue.push(nbr);
+            }
+          }
+        }
+      }
+    }
+
+    let openEdges = 0;
+    let nonManifoldEdges = 0;
+    for (const [ek, localCount] of localEc) {
+      const [s0, s1] = ek.split('_');
+      const u = parseInt(s0, 10);
+      const v = parseInt(s1, 10);
+      const gCount = ec.get(ek) || 0;
+      const gf = hc.get(`${u}->${v}`) || 0;
+      const gr = hc.get(`${v}->${u}`) || 0;
+      const lf = localHc.get(`${u}->${v}`) || 0;
+      const lr = localHc.get(`${v}->${u}`) || 0;
+      if (gCount > 2 || gf > 1 || gr > 1 || localCount > 2 || lf > 1 || lr > 1) {
+        nonManifoldEdges++;
+      }
+      if (localCount === 1) {
+        openEdges++;
+      }
+    }
+
+    components.push({
+      triIndices,
+      triCount: triIndices.length,
+      area,
+      diag: Math.hypot(maxX - minX, maxY - minY, maxZ - minZ),
+      openEdges,
+      nonManifoldEdges,
+      isRemovable: false,
+    });
+  }
+
+  components.sort((a, b) => b.area - a.area);
+  if (components.length > 1) {
+    const main = components[0];
+    for (let idx = 1; idx < components.length; idx++) {
+      const comp = components[idx];
+      comp.isRemovable =
+        comp.area < main.area * maxAreaRatio ||
+        comp.diag < main.diag * 0.25 ||
+        comp.triCount <= 60 ||
+        ((comp.openEdges > 0 || comp.nonManifoldEdges > 0) && comp.area < main.area * 0.50);
+    }
+  }
+
+  return components;
+}
+
+/**
+ * Remove broken or unconnected secondary components from `tris`.
+ */
+function pruneDisconnectedParts(vertices, tris, options = {}) {
+  const { maxAreaRatio = 0.20, keepOnlyLargest = false } = options;
+  const components = findConnectedComponents(vertices, tris, maxAreaRatio);
+  if (components.length <= 1) {
+    return { tris, partsRemoved: 0, trianglesRemoved: 0 };
+  }
+
+  const removeSet = new Uint8Array(tris.length);
+  let partsRemoved = 0;
+  let trianglesRemoved = 0;
+
+  for (let i = 1; i < components.length; i++) {
+    const comp = components[i];
+    if (keepOnlyLargest || comp.isRemovable) {
+      partsRemoved++;
+      trianglesRemoved += comp.triCount;
+      for (const f of comp.triIndices) {
+        removeSet[f] = 1;
+      }
+    }
+  }
+
+  if (partsRemoved === 0) {
+    return { tris, partsRemoved: 0, trianglesRemoved: 0 };
+  }
+
+  const next = [];
+  for (let f = 0; f < tris.length; f++) {
+    if (!removeSet[f]) next.push(tris[f]);
+  }
+  return { tris: next, partsRemoved, trianglesRemoved };
+}
+
+function buildGeometryFromTris(vertices, tris) {
+  const positions = new Float32Array(tris.length * 9);
+  for (let f = 0; f < tris.length; f++) {
+    const [a, b, c] = tris[f];
+    const va = vertices[a];
+    const vb = vertices[b];
+    const vc = vertices[c];
+    const off = f * 9;
+    positions[off] = va.x; positions[off + 1] = va.y; positions[off + 2] = va.z;
+    positions[off + 3] = vb.x; positions[off + 4] = vb.y; positions[off + 5] = vb.z;
+    positions[off + 6] = vc.x; positions[off + 7] = vc.y; positions[off + 8] = vc.z;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  return geo;
 }
 
 /**
@@ -1068,12 +1263,12 @@ function harmonizeNormals(vertices, tris) {
 }
 
 /**
- * Repair holes, T-junctions, micro-seams, degenerate faces, and winding issues
+ * Repair holes, T-junctions, micro-seams, degenerate faces, broken shards, and winding issues
  * in a BufferGeometry.
  *
  * @param {THREE.BufferGeometry} geometry
  * @param {object} [options]
- * @returns {{ geometry: THREE.BufferGeometry, beforeStats: object, afterStats: object, holesFilled: number, edgesStitched: number, degeneratesRemoved: number }}
+ * @returns {{ geometry: THREE.BufferGeometry, beforeStats: object, afterStats: object, holesFilled: number, edgesStitched: number, degeneratesRemoved: number, partsRemoved: number }}
  */
 export function fixMesh(geometry, options = {}) {
   const {
@@ -1081,18 +1276,27 @@ export function fixMesh(geometry, options = {}) {
     snapEps = 5e-4,
     tJuncEps = 5e-5,
     maxHoleVertices = 150,
+    removeUnconnected = true,
     _retried = false,
     _pass2 = false,
   } = options;
 
   const beforeStats = analyzeMesh(geometry);
 
-  // Pass 1: Vertex welding + degenerate/duplicate & stray non-manifold fin pruning
+  // Pass 1: Vertex welding + degenerate/duplicate, stray non-manifold fin & loose part pruning
   const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
   const pruned1 = pruneTriangles(vertices, rawTris);
   const finPruned = pruneNonManifoldFins(vertices, pruned1.tris);
   let tris = finPruned.tris;
   let degeneratesRemoved = pruned1.removed + finPruned.removed;
+  let partsRemoved = 0;
+
+  if (removeUnconnected) {
+    const prunedParts1 = pruneDisconnectedParts(vertices, tris);
+    tris = prunedParts1.tris;
+    partsRemoved += prunedParts1.partsRemoved;
+    degeneratesRemoved += prunedParts1.trianglesRemoved;
+  }
 
   // Pass 2: Manifold-guarded multi-vertex T-junction stitching FIRST
   const tJunc1 = stitchTJunctions(vertices, tris, tJuncEps);
@@ -1183,11 +1387,17 @@ export function fixMesh(geometry, options = {}) {
     }
   }
 
-  // Post-hole-fill cleanup for any newly exposed degenerate or non-manifold slivers
+  // Post-hole-fill cleanup for any newly exposed degenerate, non-manifold slivers, or loose shards
   const postHolePruned = pruneTriangles(vertices, tris);
   const postHoleFins = pruneNonManifoldFins(vertices, postHolePruned.tris);
   tris = postHoleFins.tris;
   degeneratesRemoved += postHolePruned.removed + postHoleFins.removed;
+  if (removeUnconnected) {
+    const prunedParts2 = pruneDisconnectedParts(vertices, tris);
+    tris = prunedParts2.tris;
+    partsRemoved += prunedParts2.partsRemoved;
+    degeneratesRemoved += prunedParts2.trianglesRemoved;
+  }
 
   // Pass 5: Consistent outward normal winding (guard against increasing non-manifold edges)
   const preHarmTopo = buildTopology(vertices, tris);
@@ -1198,23 +1408,7 @@ export function fixMesh(geometry, options = {}) {
   }
 
   // Build non-indexed BufferGeometry
-  const positions = new Float32Array(tris.length * 9);
-  for (let f = 0; f < tris.length; f++) {
-    const [a, b, c] = tris[f];
-    const va = vertices[a];
-    const vb = vertices[b];
-    const vc = vertices[c];
-    const off = f * 9;
-    positions[off] = va.x; positions[off + 1] = va.y; positions[off + 2] = va.z;
-    positions[off + 3] = vb.x; positions[off + 4] = vb.y; positions[off + 5] = vb.z;
-    positions[off + 6] = vc.x; positions[off + 7] = vc.y; positions[off + 8] = vc.z;
-  }
-
-  const fixedGeo = new THREE.BufferGeometry();
-  fixedGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  fixedGeo.computeVertexNormals();
-  fixedGeo.computeBoundingBox();
-  fixedGeo.computeBoundingSphere();
+  const fixedGeo = buildGeometryFromTris(vertices, tris);
 
   const afterStats = analyzeMesh(fixedGeo);
 
@@ -1239,6 +1433,7 @@ export function fixMesh(geometry, options = {}) {
         holesFilled: holesFilled + pass2.holesFilled,
         edgesStitched: edgesStitched + pass2.edgesStitched,
         degeneratesRemoved: degeneratesRemoved + pass2.degeneratesRemoved,
+        partsRemoved: partsRemoved + (pass2.partsRemoved || 0),
       };
     }
     pass2.geometry.dispose();
@@ -1251,5 +1446,36 @@ export function fixMesh(geometry, options = {}) {
     holesFilled,
     edgesStitched,
     degeneratesRemoved,
+    partsRemoved,
+  };
+}
+
+/**
+ * Remove broken shards or tiny unconnected mesh components from a BufferGeometry.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {object} [options]
+ * @returns {{ geometry: THREE.BufferGeometry, partsRemoved: number, trianglesRemoved: number, beforeStats: object, afterStats: object }}
+ */
+export function removeDisconnectedParts(geometry, options = {}) {
+  const { weldEps = 1e-5, maxAreaRatio = 0.20, keepOnlyLargest = false } = options;
+  const beforeStats = analyzeMesh(geometry);
+  const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
+  const prunedDeg = pruneTriangles(vertices, rawTris);
+  const finPruned = pruneNonManifoldFins(vertices, prunedDeg.tris);
+  const partRes = pruneDisconnectedParts(vertices, finPruned.tris, {
+    maxAreaRatio,
+    keepOnlyLargest,
+  });
+
+  const cleanGeo = buildGeometryFromTris(vertices, partRes.tris);
+  const afterStats = analyzeMesh(cleanGeo);
+
+  return {
+    geometry: cleanGeo,
+    partsRemoved: partRes.partsRemoved,
+    trianglesRemoved: prunedDeg.removed + finPruned.removed + partRes.trianglesRemoved,
+    beforeStats,
+    afterStats,
   };
 }

@@ -17,7 +17,7 @@ import {
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges } from './edgeDetector.js';
 import { applyChamfer, previewChamfer, ChamferParams } from './chamferEngine.js';
-import { analyzeMesh, fixMesh } from './meshFixer.js';
+import { analyzeMesh, fixMesh, removeDisconnectedParts } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
 import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState } from './ui.js';
 
@@ -149,6 +149,7 @@ let showPreview = false;
 let showEdgeHighlight = true;
 let loopSelectionMode = true; // default to loop/chain selection
 let autoFixMesh = true;
+let removeUnconnectedParts = true;
 
 let autoDetectTimer = null;
 function triggerAutoDetect(delay = 60) {
@@ -247,7 +248,17 @@ const { updateInfo, fileInput, setWidth } = buildUI({
   onAutoFixToggle: (v) => {
     autoFixMesh = v;
   },
+  onRemoveUnconnectedToggle: (v) => {
+    removeUnconnectedParts = v;
+    if (v && currentMesh && !isProcessingMesh) {
+      const stats = analyzeMesh(currentMesh.geometry);
+      if (stats.disconnectedParts > 0) {
+        handleCleanUnconnectedParts();
+      }
+    }
+  },
   onRunMeshFixer: handleRunMeshFixer,
+  onCleanUnconnectedParts: handleCleanUnconnectedParts,
   onWireframeToggle: (v) => {
     if (currentMesh) currentMesh.material.wireframe = v;
   },
@@ -663,8 +674,27 @@ function formatMeshFixSummary(fixRes) {
   const parts = [];
   if (fixRes.holesFilled > 0) parts.push(`${fixRes.holesFilled} hole${fixRes.holesFilled > 1 ? 's' : ''} filled`);
   if (fixRes.edgesStitched > 0) parts.push(`${fixRes.edgesStitched} edge${fixRes.edgesStitched > 1 ? 's' : ''} stitched`);
+  if (fixRes.partsRemoved > 0) parts.push(`${fixRes.partsRemoved} loose part${fixRes.partsRemoved > 1 ? 's' : ''} removed`);
   if (fixRes.degeneratesRemoved > 0) parts.push(`${fixRes.degeneratesRemoved} degenerate removed`);
   return parts.join(', ');
+}
+
+function finalizeReplacedGeometry(nextGeometry) {
+  currentIsInitial = false;
+  syncUndoRedoUI();
+
+  currentMesh.geometry.dispose();
+  currentMesh.geometry = nextGeometry;
+  currentMesh.geometry.computeVertexNormals();
+  currentMesh.geometry.computeBoundingBox();
+  currentMesh.geometry.computeBoundingSphere();
+
+  removeEdgeLines();
+  removePreview();
+  currentEdgeData = null;
+
+  setProcessingState(false);
+  handleDetectEdges();
 }
 
 let isProcessingMesh = false;
@@ -739,12 +769,9 @@ async function handleApplyChamfer() {
         await waitForNextPaint();
 
         try {
-          const fixRes = fixMesh(newGeometry);
+          const fixRes = fixMesh(newGeometry, { removeUnconnected: removeUnconnectedParts });
           newGeometry.dispose();
           newGeometry = fixRes.geometry;
-          newGeometry.computeVertexNormals();
-          newGeometry.computeBoundingBox();
-          newGeometry.computeBoundingSphere();
           const detail = formatMeshFixSummary(fixRes);
           if (detail) fixedNotice = ` · MeshFixer: ${detail}`;
           remainingIssues = fixRes.afterStats.issueCount;
@@ -752,6 +779,15 @@ async function handleApplyChamfer() {
           console.warn('Auto MeshFixer failed after chamfer:', fixErr);
           remainingIssues = postStats.issueCount;
         }
+      } else if (removeUnconnectedParts && postStats.disconnectedParts > 0) {
+        const cleanRes = removeDisconnectedParts(newGeometry);
+        newGeometry.dispose();
+        newGeometry = cleanRes.geometry;
+        if (cleanRes.partsRemoved > 0) {
+          fixedNotice = ` · ${cleanRes.partsRemoved} loose part${cleanRes.partsRemoved > 1 ? 's' : ''} removed`;
+        }
+        remainingIssues = cleanRes.afterStats.issueCount;
+        manualFixHint = remainingIssues > 0;
       } else {
         remainingIssues = postStats.issueCount;
         manualFixHint = true;
@@ -766,25 +802,10 @@ async function handleApplyChamfer() {
     );
     await waitForNextPaint();
 
-    currentIsInitial = false;
-    syncUndoRedoUI();
-
-    // Replace geometry
-    currentMesh.geometry.dispose();
-    currentMesh.geometry = newGeometry;
-
-    // Clear edge data & preview
-    removeEdgeLines();
-    removePreview();
-    currentEdgeData = null;
-
-    setProcessingState(false);
-
-    // Re-detect sharp edges on the newly chamfered geometry (also calls refreshInfo)
-    handleDetectEdges();
+    finalizeReplacedGeometry(newGeometry);
     if (manualFixHint) {
       showToast(
-        `${label} applied with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
+        `${label} applied${fixedNotice} with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
         'is-unselected'
       );
     } else if (remainingIssues > 0) {
@@ -827,7 +848,7 @@ async function handleRunMeshFixer() {
 
     let fixRes;
     try {
-      fixRes = fixMesh(currentMesh.geometry);
+      fixRes = fixMesh(currentMesh.geometry, { removeUnconnected: removeUnconnectedParts });
     } catch (err) {
       console.error('MeshFixer failed:', err);
       const popped = undoStack.pop();
@@ -837,7 +858,11 @@ async function handleRunMeshFixer() {
       return;
     }
 
-    const fixedCount = fixRes.holesFilled + fixRes.edgesStitched + fixRes.degeneratesRemoved;
+    const fixedCount =
+      fixRes.holesFilled +
+      fixRes.edgesStitched +
+      fixRes.degeneratesRemoved +
+      (fixRes.partsRemoved || 0);
     const improved = fixedCount > 0 || fixRes.afterStats.issueCount < before.issueCount;
     if (!improved) {
       fixRes.geometry.dispose();
@@ -863,22 +888,7 @@ async function handleRunMeshFixer() {
     );
     await waitForNextPaint();
 
-    currentIsInitial = false;
-    syncUndoRedoUI();
-
-    currentMesh.geometry.dispose();
-    currentMesh.geometry = fixRes.geometry;
-    currentMesh.geometry.computeVertexNormals();
-    currentMesh.geometry.computeBoundingBox();
-    currentMesh.geometry.computeBoundingSphere();
-
-    removeEdgeLines();
-    removePreview();
-    currentEdgeData = null;
-
-    setProcessingState(false);
-
-    handleDetectEdges();
+    finalizeReplacedGeometry(fixRes.geometry);
     const detailText = formatMeshFixSummary(fixRes) || 'vertices/normals cleaned';
     if (fixRes.afterStats.isWatertight) {
       showToast(`MeshFixer: watertight ✓ (${detailText})`, 'is-selected');
@@ -888,6 +898,57 @@ async function handleRunMeshFixer() {
         'is-unselected'
       );
     }
+  } finally {
+    isProcessingMesh = false;
+    setProcessingState(false);
+  }
+}
+
+// ---- Remove Broken / Unconnected Mesh Parts ----
+async function handleCleanUnconnectedParts() {
+  if (isProcessingMesh || !currentMesh) return;
+
+  isProcessingMesh = true;
+  setProcessingState(
+    true,
+    'Cleaning Loose Parts...',
+    'Detecting disconnected shells & broken shards...',
+    'clean-parts-btn'
+  );
+
+  try {
+    await waitForNextPaint();
+
+    pushUndoState();
+
+    let res;
+    try {
+      res = removeDisconnectedParts(currentMesh.geometry);
+    } catch (err) {
+      console.error('Clean loose parts failed:', err);
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      showToast('Failed to clean loose mesh parts', 'is-unselected');
+      return;
+    }
+
+    if (res.partsRemoved === 0 && res.trianglesRemoved === 0) {
+      res.geometry.dispose();
+      const popped = undoStack.pop();
+      popped?.geo?.dispose();
+      syncUndoRedoUI();
+      setProcessingState(false);
+      refreshInfo();
+      showToast('No broken or unconnected mesh parts found', 'is-selected');
+      return;
+    }
+
+    finalizeReplacedGeometry(res.geometry);
+    const msg = res.partsRemoved > 0
+      ? `Removed ${res.partsRemoved} loose part${res.partsRemoved > 1 ? 's' : ''} (${res.trianglesRemoved} tris) (Ctrl+Z to undo)`
+      : `Removed ${res.trianglesRemoved} broken sliver triangle${res.trianglesRemoved > 1 ? 's' : ''} (Ctrl+Z to undo)`;
+    showToast(msg, 'is-selected');
   } finally {
     isProcessingMesh = false;
     setProcessingState(false);
