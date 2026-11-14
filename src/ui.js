@@ -37,9 +37,16 @@ export function buildUI(callbacks) {
 
   // ---- Title ----
   const title = el('div', 'sidebar-title', '⚡ Chamfer That Mesh');
-  const subtitle = el('div', 'sidebar-subtitle', '3D Edge Chamfer & Fillet Studio');
+  const subtitle = el('div', 'sidebar-subtitle', 'Best-Guess STL / 3MF Post-Processor');
+  const disclaimer = el(
+    'div',
+    'sidebar-disclaimer',
+    '⚠ Heuristic mesh post-processing: operates on raw STL/3MF triangles. Outcomes may come out imprecise or broken on complex geometry.'
+  );
+  disclaimer.id = 'sidebar-disclaimer';
   sidebar.appendChild(title);
   sidebar.appendChild(subtitle);
+  sidebar.appendChild(disclaimer);
 
   // ============ FILE section ============
   const fileSection = section('File');

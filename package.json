@@ -2,7 +2,7 @@
   "name": "chamfer-that-mesh",
   "version": "1.0.0",
   "private": false,
-  "description": "Interactive browser-based 3D mesh edge chamfering, filleting, and hybrid beveling studio for STL and 3MF models.",
+  "description": "Best-guess browser-based 3D mesh post-processing tool to chamfer, fillet, and bevel STL and 3MF triangle meshes (heuristic CSG implementation; outcomes may be imprecise or broken).",
   "homepage": "https://larsbrockmann.github.io/chamfer-that-mesh/",
   "repository": {
     "type": "git",

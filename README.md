@@ -2,7 +2,17 @@
 
 **Live Demo:** https://larsbrockmann.github.io/chamfer-that-mesh/
 
-An interactive, browser-based **3D mesh edge chamfering, filleting, and hybrid beveling studio** for **STL** and **3MF** models, built with Three.js and BVH CSG. Designed for 3D printing and CAD post-processing entirely client-side at 1:1 millimeter scale.
+An interactive, browser-based **best-guess 3D mesh post-processing tool** for adding edge chamfers, fillets, and hybrid bevels to triangulated **STL** and **3MF** models, built with Three.js and BVH CSG. Designed for quick client-side 3D printing post-processing at 1:1 millimeter scale when original parametric CAD files are unavailable.
+
+> [!WARNING]
+> **Best-Guess Mesh Post-Processing — Outcomes May Be Broken or Imprecise**
+>
+> Unlike parametric CAD software (STEP / B-Rep kernels) that works on exact mathematical surfaces, **STL and 3MF files are raw triangle meshes** with no surface history or topological intent.
+>
+> **Chamfer That Mesh** is a **heuristic, best-guess implementation** that estimates sharp edges from triangle dihedral angles, sweeps bevel cutters along detected chains, and subtracts them via triangle-mesh CSG booleans (followed by best-effort automated mesh repair). Because of inherent limitations of boolean operations on arbitrary tessellated meshes:
+> - **Results may come out broken, non-manifold, have open holes/artifacts, or be geometrically imprecise**, especially on complex multi-edge corners, tight curves, dense/noisy organic meshes, or large bevel widths.
+> - Always inspect the modified mesh and **Mesh Health** status before exporting, and verify the sliced toolpath in your 3D printer slicer before printing.
+> - Whenever you have access to the original parametric CAD model (Fusion, FreeCAD, OpenSCAD, SolidWorks, Onshape, etc.), prefer applying chamfers/fillets in native CAD first.
 
 ## Features
 
@@ -33,6 +43,9 @@ An interactive, browser-based **3D mesh edge chamfering, filleting, and hybrid b
 - **Precision & Coarse Width Controls**
   - Slider covers `0.1–1.0 mm` in coarse `0.1 mm` steps for quick everyday 3D print edge break adjustments.
   - Direct numeric input textbox (`mm`) accepts exact dimensions and **automatically extends the slider range** when values outside `0.1–1.0 mm` are entered.
+- **Built-in MeshFixer & Stage Progress**
+  - Automatic and on-demand **MeshFixer** (`Auto-Fix Holes & Issues` toggle + `🔧 Run MeshFixer` button) that attempts to weld vertices, stitch T-junction seams, remove degenerate triangles, and fill residual boundary holes after CSG operations.
+  - Live **Mesh Health** status indicator and multi-stage viewport loading overlay during heavy CSG and repair passes.
 - **Non-Destructive History & Orientation**
   - Up to 20 levels of **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`, `Cmd` on macOS).
   - One-click **Reset to Original** (also undoable).
@@ -115,6 +128,7 @@ Upload the entire contents of `dist/` (including `.nojekyll`, `index.html`, `ass
 │   ├── main.js                   # Scene lifecycle, interaction picking, undo/redo/reset stack, UI wiring
 │   ├── edgeDetector.js           # Vertex welding, half-edge dihedral analysis, chain simplifier & LineSegments2 renderer
 │   ├── chamferEngine.js          # Vertex-averaged profile frames, preview mesh generator & three-bvh-csg subtraction
+│   ├── meshFixer.js              # Manifold analyzer, T-junction seam stitcher, hole filler & normal harmonizer
 │   ├── loaders.js                # STL & 3MF file/URL importers with 1:1 millimeter normalization
 │   ├── meshExporter.js           # Binary STL exporter and OPC-compliant 3MF ZIP generator
 │   ├── scene.js                  # Three.js WebGLRenderer, camera, OrbitControls, lighting, grid & axes helpers

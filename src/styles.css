@@ -122,6 +122,18 @@ body {
   text-transform: uppercase;
 }
 
+.sidebar-disclaimer {
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  background: rgba(255, 159, 67, 0.09);
+  border: 1px solid rgba(255, 159, 67, 0.32);
+  border-left: 3px solid var(--accent-orange);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  margin-bottom: 4px;
+}
+
 .section {
   background: var(--bg-section);
   border-radius: var(--radius);
