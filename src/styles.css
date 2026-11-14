@@ -591,6 +591,40 @@ button:disabled {
   border-radius: 3px;
 }
 
+/* ---- MeshFixer Health Banner & Warning Button ---- */
+
+.btn-warning {
+  background: var(--accent-orange);
+  color: #111;
+}
+
+.btn-warning:hover {
+  background: #ffb366;
+}
+
+.mesh-health-banner {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.mesh-health-banner.health-ok {
+  background: rgba(81, 207, 102, 0.12);
+  border-color: rgba(81, 207, 102, 0.45);
+  color: var(--success);
+}
+
+.mesh-health-banner.health-warn {
+  background: rgba(255, 159, 67, 0.14);
+  border-color: rgba(255, 159, 67, 0.55);
+  color: var(--accent-orange);
+}
+
 /* ---- Responsive ---- */
 
 @media (max-width: 700px) {

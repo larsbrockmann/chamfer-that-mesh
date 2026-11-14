@@ -49,6 +49,22 @@ function interpolateProfileDir(i1, i2, t, profile, segments) {
   return new THREE.Vector3().copy(i1).lerp(i2, t).normalize();
 }
 
+const SMOOTH_CHAIN_DOT_THRESHOLD = -Math.cos((25 * Math.PI) / 180);
+
+function getOutwardTangent(edge, vi) {
+  return (edge.vi1 === vi
+    ? new THREE.Vector3().subVectors(edge.v2, edge.v1)
+    : new THREE.Vector3().subVectors(edge.v1, edge.v2)
+  ).normalize();
+}
+
+function isSmoothChainVertex(vd, vi) {
+  if (!vd || vd.count !== 2 || !vd.edges || vd.edges.length !== 2) return false;
+  const d0 = getOutwardTangent(vd.edges[0], vi);
+  const d1 = getOutwardTangent(vd.edges[1], vi);
+  return d0.dot(d1) <= SMOOTH_CHAIN_DOT_THRESHOLD;
+}
+
 /**
  * Compute edge insets and vertex-averaged frames for continuous, seamless chamfering.
  * Prevents disconnected teeth/fins on rounded corners by matching adjacent cross-sections.
@@ -95,17 +111,25 @@ function buildVertexChamferFrames(edges, edgeData) {
     for (const vi of [vi1, vi2]) {
       if (!vertexMap.has(vi)) {
         vertexMap.set(vi, {
-          sumInset1: new THREE.Vector3(),
-          sumInset2: new THREE.Vector3(),
-          sumCornerNorm: new THREE.Vector3(),
-          count: 0,
+          refInset1: inset1.clone(),
+          refInset2: inset2.clone(),
+          sumInset1: inset1.clone(),
+          sumInset2: inset2.clone(),
+          sumCornerNorm: cornerNorm.clone(),
+          count: 1,
+          edges: [edge],
         });
+      } else {
+        const vd = vertexMap.get(vi);
+        const swap =
+          inset1.dot(vd.refInset1) + inset2.dot(vd.refInset2) <
+          inset1.dot(vd.refInset2) + inset2.dot(vd.refInset1);
+        vd.sumInset1.add(swap ? inset2 : inset1);
+        vd.sumInset2.add(swap ? inset1 : inset2);
+        vd.sumCornerNorm.add(cornerNorm);
+        vd.count++;
+        vd.edges.push(edge);
       }
-      const vd = vertexMap.get(vi);
-      vd.sumInset1.add(inset1);
-      vd.sumInset2.add(inset2);
-      vd.sumCornerNorm.add(cornerNorm);
-      vd.count++;
     }
   }
 
@@ -248,9 +272,120 @@ export function previewChamfer(edgeData, params) {
   return group;
 }
 
+function pushTriOutward(arr, a, b, c, centroid) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const abz = b.z - a.z;
+  const acx = c.x - a.x;
+  const acy = c.y - a.y;
+  const acz = c.z - a.z;
+  const nx = aby * acz - abz * acy;
+  const ny = abz * acx - abx * acz;
+  const nz = abx * acy - aby * acx;
+  const fx = (a.x + b.x + c.x) / 3 - centroid.x;
+  const fy = (a.y + b.y + c.y) / 3 - centroid.y;
+  const fz = (a.z + b.z + c.z) / 3 - centroid.z;
+  if (nx * fx + ny * fy + nz * fz < 0) {
+    arr.push(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z);
+  } else {
+    arr.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  }
+}
+
+function resolveEndpointFrame(frame, vd, isSmooth) {
+  if (
+    isSmooth &&
+    vd.sumInset1.lengthSq() > 1e-10 &&
+    vd.sumInset2.lengthSq() > 1e-10
+  ) {
+    const avg1 = vd.sumInset1.clone().normalize();
+    const avg2 = vd.sumInset2.clone().normalize();
+    const swap =
+      frame.inset1.dot(avg1) + frame.inset2.dot(avg2) <
+      frame.inset1.dot(avg2) + frame.inset2.dot(avg1);
+    return {
+      i1: swap ? avg2 : avg1,
+      i2: swap ? avg1 : avg2,
+      cn: vd.sumCornerNorm.lengthSq() > 1e-10
+        ? vd.sumCornerNorm.clone().normalize()
+        : frame.cornerNorm,
+    };
+  }
+  return { i1: frame.inset1, i2: frame.inset2, cn: frame.cornerNorm };
+}
+
+function partitionSmoothChains(edges, edgeMap, vertexMap) {
+  const edgeToChain = new Map();
+  const chains = [];
+
+  for (const edge of edges) {
+    if (edgeToChain.has(edge) || !edgeMap.has(edge)) continue;
+    const chain = [edge];
+    edgeToChain.set(edge, chains.length);
+    const queue = [edge];
+
+    while (queue.length > 0) {
+      const cur = queue.pop();
+      for (const vi of [cur.vi1, cur.vi2]) {
+        const vd = vertexMap.get(vi);
+        if (!isSmoothChainVertex(vd, vi)) continue;
+        for (const nb of vd.edges) {
+          if (!edgeToChain.has(nb) && edgeMap.has(nb)) {
+            edgeToChain.set(nb, chains.length);
+            chain.push(nb);
+            queue.push(nb);
+          }
+        }
+      }
+    }
+    chains.push(chain);
+  }
+
+  const cornerVertToChains = new Map();
+  chains.forEach((chain, cIdx) => {
+    for (const e of chain) {
+      for (const vi of [e.vi1, e.vi2]) {
+        if (!isSmoothChainVertex(vertexMap.get(vi), vi)) {
+          if (!cornerVertToChains.has(vi)) cornerVertToChains.set(vi, new Set());
+          cornerVertToChains.get(vi).add(cIdx);
+        }
+      }
+    }
+  });
+
+  const maxPasses = edges.length <= 60 ? 4 : 2;
+  const chainColor = new Array(chains.length).fill(-1);
+
+  for (let cIdx = 0; cIdx < chains.length; cIdx++) {
+    const conflicts = new Int32Array(maxPasses);
+    for (const e of chains[cIdx]) {
+      for (const vi of [e.vi1, e.vi2]) {
+        const sharing = cornerVertToChains.get(vi);
+        if (!sharing) continue;
+        for (const other of sharing) {
+          if (other < cIdx && chainColor[other] >= 0) {
+            conflicts[chainColor[other]]++;
+          }
+        }
+      }
+    }
+    let bestPass = 0;
+    for (let p = 1; p < maxPasses; p++) {
+      if (conflicts[p] < conflicts[bestPass]) bestPass = p;
+    }
+    chainColor[cIdx] = bestPass;
+  }
+
+  const passes = Array.from({ length: maxPasses }, () => []);
+  for (let cIdx = 0; cIdx < chains.length; cIdx++) {
+    passes[chainColor[cIdx]].push(...chains[cIdx]);
+  }
+  return passes.filter((p) => p.length > 0);
+}
+
 /**
- * Apply chamfer/fillet to geometry using continuous-chain CSG subtraction.
- * Vertex-aligned cross-sections eliminate sawtooth fins and broken edges on rounded corners.
+ * Apply chamfer/fillet to geometry using smooth-chain multi-pass CSG subtraction.
+ * Consistent outward prism winding and extended outer skirts prevent grazing CSG holes.
  *
  * @param {THREE.BufferGeometry} geometry
  * @param {import('./edgeDetector.js').EdgeData} edgeData
@@ -265,134 +400,134 @@ export function applyChamfer(geometry, edgeData, params) {
 
   const { width, segments, profile = 'chamfer' } = params;
   const { edgeMap, vertexMap } = buildVertexChamferFrames(edges, edgeData);
-  const cutterPositions = [];
-
-  for (const edge of edges) {
-    const frame = edgeMap.get(edge);
-    if (!frame) continue;
-
-    const { vi1, vi2, v1, v2 } = edge;
-    const vd1 = vertexMap.get(vi1);
-    const vd2 = vertexMap.get(vi2);
-
-    // Vertex-averaged insets ensure adjacent prisms share identical boundary polygons
-    const i1_v1 = vd1 && vd1.count > 1 ? vd1.sumInset1.clone().normalize() : frame.inset1;
-    const i2_v1 = vd1 && vd1.count > 1 ? vd1.sumInset2.clone().normalize() : frame.inset2;
-    const cn_v1 = vd1 && vd1.count > 1 ? vd1.sumCornerNorm.clone().normalize() : frame.cornerNorm;
-
-    const i1_v2 = vd2 && vd2.count > 1 ? vd2.sumInset1.clone().normalize() : frame.inset1;
-    const i2_v2 = vd2 && vd2.count > 1 ? vd2.sumInset2.clone().normalize() : frame.inset2;
-    const cn_v2 = vd2 && vd2.count > 1 ? vd2.sumCornerNorm.clone().normalize() : frame.cornerNorm;
-
-    // Profile points along the chamfer arc at v1
-    const arc1 = [];
-    for (let s = 0; s <= segments; s++) {
-      const t = s / segments;
-      const dir = interpolateProfileDir(i1_v1, i2_v1, t, profile, segments);
-      arc1.push(v1.clone().addScaledVector(dir, width));
-    }
-    // Outer apex just outside the corner
-    const apex1 = v1.clone().addScaledVector(cn_v1, width * 0.15);
-
-    // Profile points along the chamfer arc at v2
-    const arc2 = [];
-    for (let s = 0; s <= segments; s++) {
-      const t = s / segments;
-      const dir = interpolateProfileDir(i1_v2, i2_v2, t, profile, segments);
-      arc2.push(v2.clone().addScaledVector(dir, width));
-    }
-    const apex2 = v2.clone().addScaledVector(cn_v2, width * 0.15);
-
-    // End caps: ONLY added at open dead-end boundary terminations, NEVER at continuous curve vertices!
-    if (vd1 && vd1.count === 1) {
-      for (let s = 0; s < segments; s++) {
-        cutterPositions.push(
-          apex1.x, apex1.y, apex1.z,
-          arc1[s].x, arc1[s].y, arc1[s].z,
-          arc1[s + 1].x, arc1[s + 1].y, arc1[s + 1].z
-        );
-      }
-    }
-
-    if (vd2 && vd2.count === 1) {
-      for (let s = 0; s < segments; s++) {
-        cutterPositions.push(
-          apex2.x, apex2.y, apex2.z,
-          arc2[s + 1].x, arc2[s + 1].y, arc2[s + 1].z,
-          arc2[s].x, arc2[s].y, arc2[s].z
-        );
-      }
-    }
-
-    // Side quad 1: from apex to first arc line
-    cutterPositions.push(
-      apex1.x, apex1.y, apex1.z,
-      apex2.x, apex2.y, apex2.z,
-      arc2[0].x, arc2[0].y, arc2[0].z,
-
-      apex1.x, apex1.y, apex1.z,
-      arc2[0].x, arc2[0].y, arc2[0].z,
-      arc1[0].x, arc1[0].y, arc1[0].z
-    );
-
-    // Side quad 2: from last arc line to apex
-    const last = segments;
-    cutterPositions.push(
-      arc1[last].x, arc1[last].y, arc1[last].z,
-      arc2[last].x, arc2[last].y, arc2[last].z,
-      apex2.x, apex2.y, apex2.z,
-
-      arc1[last].x, arc1[last].y, arc1[last].z,
-      apex2.x, apex2.y, apex2.z,
-      apex1.x, apex1.y, apex1.z
-    );
-
-    // Chamfer / fillet cut faces along the arc
-    for (let s = 0; s < segments; s++) {
-      cutterPositions.push(
-        arc1[s].x, arc1[s].y, arc1[s].z,
-        arc1[s + 1].x, arc1[s + 1].y, arc1[s + 1].z,
-        arc2[s + 1].x, arc2[s + 1].y, arc2[s + 1].z,
-
-        arc1[s].x, arc1[s].y, arc1[s].z,
-        arc2[s + 1].x, arc2[s + 1].y, arc2[s + 1].z,
-        arc2[s].x, arc2[s].y, arc2[s].z
-      );
-    }
-  }
-
-  if (cutterPositions.length === 0) {
+  const passes = partitionSmoothChains(edges, edgeMap, vertexMap);
+  if (passes.length === 0) {
     return geometry.clone();
   }
 
-  const cutterGeo = new THREE.BufferGeometry();
-  cutterGeo.setAttribute(
-    'position',
-    new THREE.Float32BufferAttribute(cutterPositions, 3)
-  );
-  cutterGeo.computeVertexNormals();
-
-  let baseGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  const baseGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
   baseGeo.computeVertexNormals();
 
+  let curBrush = new Brush(baseGeo);
+  curBrush.updateMatrixWorld();
+
+  const evaluator = new Evaluator();
+  evaluator.attributes = ['position', 'normal'];
+
   try {
-    const modelBrush = new Brush(baseGeo);
-    modelBrush.updateMatrixWorld();
+    for (let passIdx = 0; passIdx < passes.length; passIdx++) {
+      const cutterPositions = [];
 
-    const cutterBrush = new Brush(cutterGeo);
-    cutterBrush.updateMatrixWorld();
+      for (const edge of passes[passIdx]) {
+        const frame = edgeMap.get(edge);
+        if (!frame) continue;
 
-    const evaluator = new Evaluator();
-    evaluator.attributes = ['position', 'normal'];
+        const { vi1, vi2, v1, v2 } = edge;
+        const vd1 = vertexMap.get(vi1);
+        const vd2 = vertexMap.get(vi2);
+        const isSmooth1 = isSmoothChainVertex(vd1, vi1);
+        const isSmooth2 = isSmoothChainVertex(vd2, vi2);
 
-    const result = evaluator.evaluate(modelBrush, cutterBrush, SUBTRACTION);
-    const resultGeo = result.geometry.clone();
+        const { i1: i1_v1, i2: i2_v1, cn: cn_v1 } = resolveEndpointFrame(frame, vd1, isSmooth1);
+        const { i1: i1_v2, i2: i2_v2, cn: cn_v2 } = resolveEndpointFrame(frame, vd2, isSmooth2);
+
+        // Extend non-smooth corner endpoints cleanly past adjacent faces
+        const p1 = !isSmooth1 ? v1.clone().addScaledVector(frame.edgeDir, -width * 0.5) : v1;
+        const p2 = !isSmooth2 ? v2.clone().addScaledVector(frame.edgeDir, width * 0.5) : v2;
+
+        // Profile points along the chamfer arc at v1 and v2
+        const arc1 = [];
+        for (let s = 0; s <= segments; s++) {
+          const t = s / segments;
+          const dir = interpolateProfileDir(i1_v1, i2_v1, t, profile, segments);
+          arc1.push(p1.clone().addScaledVector(dir, width));
+        }
+        const arc2 = [];
+        for (let s = 0; s <= segments; s++) {
+          const t = s / segments;
+          const dir = interpolateProfileDir(i1_v2, i2_v2, t, profile, segments);
+          arc2.push(p2.clone().addScaledVector(dir, width));
+        }
+
+        // Extend outer arc skirt boundaries outward into exterior air to avoid coplanar grazing
+        const ext0_1 = new THREE.Vector3().subVectors(arc1[0], arc1[1]);
+        if (ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), width * 0.35);
+        const extN_1 = new THREE.Vector3().subVectors(arc1[segments], arc1[segments - 1]);
+        if (extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), width * 0.35);
+
+        const ext0_2 = new THREE.Vector3().subVectors(arc2[0], arc2[1]);
+        if (ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), width * 0.35);
+        const extN_2 = new THREE.Vector3().subVectors(arc2[segments], arc2[segments - 1]);
+        if (extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), width * 0.35);
+
+        const apex1 = p1.clone().addScaledVector(cn_v1, width * 1.2);
+        const apex2 = p2.clone().addScaledVector(cn_v2, width * 1.2);
+
+        const centroid = new THREE.Vector3()
+          .add(apex1)
+          .add(apex2)
+          .add(arc1[0])
+          .add(arc1[segments])
+          .add(arc2[0])
+          .add(arc2[segments])
+          .multiplyScalar(1 / 6);
+
+        // End caps at non-smooth endpoints
+        if (!isSmooth1) {
+          for (let s = 0; s < segments; s++) {
+            pushTriOutward(cutterPositions, apex1, arc1[s], arc1[s + 1], centroid);
+          }
+        }
+        if (!isSmooth2) {
+          for (let s = 0; s < segments; s++) {
+            pushTriOutward(cutterPositions, apex2, arc2[s + 1], arc2[s], centroid);
+          }
+        }
+
+        // Side quad 1
+        pushTriOutward(cutterPositions, apex1, apex2, arc2[0], centroid);
+        pushTriOutward(cutterPositions, apex1, arc2[0], arc1[0], centroid);
+
+        // Side quad 2
+        const last = segments;
+        pushTriOutward(cutterPositions, arc1[last], arc2[last], apex2, centroid);
+        pushTriOutward(cutterPositions, arc1[last], apex2, apex1, centroid);
+
+        // Chamfer / fillet cut faces along the arc
+        for (let s = 0; s < segments; s++) {
+          pushTriOutward(cutterPositions, arc1[s], arc1[s + 1], arc2[s + 1], centroid);
+          pushTriOutward(cutterPositions, arc1[s], arc2[s + 1], arc2[s], centroid);
+        }
+      }
+
+      if (cutterPositions.length === 0) continue;
+
+      const cutterGeo = new THREE.BufferGeometry();
+      cutterGeo.setAttribute(
+        'position',
+        new THREE.Float32BufferAttribute(cutterPositions, 3)
+      );
+      cutterGeo.computeVertexNormals();
+
+      const cutterBrush = new Brush(cutterGeo);
+      cutterBrush.updateMatrixWorld();
+
+      const nextBrush = evaluator.evaluate(curBrush, cutterBrush, SUBTRACTION);
+      cutterGeo.dispose();
+      curBrush.geometry.dispose();
+      curBrush = nextBrush;
+      curBrush.updateMatrixWorld();
+    }
+
+    const resultGeo = curBrush.geometry.clone();
+    curBrush.geometry.dispose();
     resultGeo.computeVertexNormals();
     resultGeo.computeBoundingBox();
     resultGeo.computeBoundingSphere();
     return resultGeo;
   } catch (err) {
     console.error('CSG chamfer failed, falling back to original geometry:', err);
+    try { curBrush.geometry.dispose(); } catch (_) { /* ignore cleanup error */ }
     return geometry.clone();
   }
 }

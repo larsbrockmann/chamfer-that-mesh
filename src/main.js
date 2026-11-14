@@ -6,8 +6,9 @@ import { initScene, scene, camera, renderer, controls, setGridVisible, setAxesVi
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges } from './edgeDetector.js';
 import { applyChamfer, previewChamfer, ChamferParams } from './chamferEngine.js';
+import { analyzeMesh, fixMesh } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
-import { buildUI, updateEdgeCount, setUndoRedoState } from './ui.js';
+import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState } from './ui.js';
 
 // ---- App state ----
 let currentMesh = null;
@@ -136,6 +137,7 @@ let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
 let showPreview = true;
 let showEdgeHighlight = true;
 let loopSelectionMode = true; // default to loop/chain selection
+let autoFixMesh = true;
 
 let autoDetectTimer = null;
 function triggerAutoDetect(delay = 60) {
@@ -231,6 +233,10 @@ const { updateInfo, fileInput, setWidth } = buildUI({
   onUndo: handleUndo,
   onRedo: handleRedo,
   onReset: handleResetModel,
+  onAutoFixToggle: (v) => {
+    autoFixMesh = v;
+  },
+  onRunMeshFixer: handleRunMeshFixer,
   onWireframeToggle: (v) => {
     if (currentMesh) currentMesh.material.wireframe = v;
   },
@@ -535,6 +541,14 @@ function removePreview() {
   }
 }
 
+function formatMeshFixSummary(fixRes) {
+  const parts = [];
+  if (fixRes.holesFilled > 0) parts.push(`${fixRes.holesFilled} hole${fixRes.holesFilled > 1 ? 's' : ''} filled`);
+  if (fixRes.edgesStitched > 0) parts.push(`${fixRes.edgesStitched} edge${fixRes.edgesStitched > 1 ? 's' : ''} stitched`);
+  if (fixRes.degeneratesRemoved > 0) parts.push(`${fixRes.degeneratesRemoved} degenerate removed`);
+  return parts.join(', ');
+}
+
 // ---- Apply chamfer ----
 function handleApplyChamfer() {
   if (!currentMesh || !currentEdgeData) return;
@@ -565,6 +579,32 @@ function handleApplyChamfer() {
     return;
   }
 
+  let fixedNotice = '';
+  let remainingIssues = 0;
+  let manualFixHint = false;
+  const postStats = analyzeMesh(newGeometry);
+  if (!postStats.isWatertight) {
+    if (autoFixMesh) {
+      try {
+        const fixRes = fixMesh(newGeometry);
+        newGeometry.dispose();
+        newGeometry = fixRes.geometry;
+        newGeometry.computeVertexNormals();
+        newGeometry.computeBoundingBox();
+        newGeometry.computeBoundingSphere();
+        const detail = formatMeshFixSummary(fixRes);
+        if (detail) fixedNotice = ` · MeshFixer: ${detail}`;
+        remainingIssues = fixRes.afterStats.issueCount;
+      } catch (fixErr) {
+        console.warn('Auto MeshFixer failed after chamfer:', fixErr);
+        remainingIssues = postStats.issueCount;
+      }
+    } else {
+      remainingIssues = postStats.issueCount;
+      manualFixHint = true;
+    }
+  }
+
   currentIsInitial = false;
   syncUndoRedoUI();
 
@@ -580,7 +620,86 @@ function handleApplyChamfer() {
   // Re-detect sharp edges on the newly chamfered geometry (also calls refreshInfo)
   handleDetectEdges();
   const label = chamferProfile === 'hybrid' ? 'Hybrid bevel' : (chamferProfile === 'fillet' ? 'Fillet' : 'Chamfer');
-  showToast(`${label} applied! (Ctrl+Z to undo)`, 'is-selected');
+  if (manualFixHint) {
+    showToast(
+      `${label} applied with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
+      'is-unselected'
+    );
+  } else if (remainingIssues > 0) {
+    showToast(
+      `${label} applied${fixedNotice} (${remainingIssues} issue(s) remain)`,
+      'is-unselected'
+    );
+  } else {
+    showToast(`${label} applied${fixedNotice}! (Ctrl+Z to undo)`, 'is-selected');
+  }
+}
+
+// ---- Manual / On-demand MeshFixer ----
+function handleRunMeshFixer() {
+  if (!currentMesh) return;
+
+  const before = analyzeMesh(currentMesh.geometry);
+  if (before.isWatertight && before.issueCount === 0) {
+    refreshInfo();
+    showToast('Mesh is already watertight with 0 issues', 'is-selected');
+    return;
+  }
+
+  pushUndoState();
+
+  let fixRes;
+  try {
+    fixRes = fixMesh(currentMesh.geometry);
+  } catch (err) {
+    console.error('MeshFixer failed:', err);
+    const popped = undoStack.pop();
+    popped?.geo?.dispose();
+    syncUndoRedoUI();
+    showToast('MeshFixer failed on current geometry', 'is-unselected');
+    return;
+  }
+
+  const fixedCount = fixRes.holesFilled + fixRes.edgesStitched + fixRes.degeneratesRemoved;
+  const improved = fixedCount > 0 || fixRes.afterStats.issueCount < before.issueCount;
+  if (!improved) {
+    fixRes.geometry.dispose();
+    const popped = undoStack.pop();
+    popped?.geo?.dispose();
+    syncUndoRedoUI();
+    refreshInfo();
+    showToast(
+      fixRes.afterStats.isWatertight
+        ? 'Mesh is already watertight'
+        : `No automatic fix applied (${fixRes.afterStats.issueCount} issue(s) remain)`,
+      fixRes.afterStats.isWatertight ? 'is-selected' : 'is-unselected'
+    );
+    return;
+  }
+
+  currentIsInitial = false;
+  syncUndoRedoUI();
+
+  currentMesh.geometry.dispose();
+  currentMesh.geometry = fixRes.geometry;
+  currentMesh.geometry.computeVertexNormals();
+  currentMesh.geometry.computeBoundingBox();
+  currentMesh.geometry.computeBoundingSphere();
+
+  removeEdgeLines();
+  removePreview();
+  currentEdgeData = null;
+
+  handleDetectEdges();
+  const detailText = formatMeshFixSummary(fixRes) || 'vertices/normals cleaned';
+  if (fixRes.afterStats.isWatertight) {
+    showToast(`MeshFixer: watertight ✓ (${detailText})`, 'is-selected');
+  } else {
+    showToast(
+      `MeshFixer: ${detailText} (${fixRes.afterStats.issueCount} issue(s) remain)`,
+      'is-unselected'
+    );
+  }
 }
 
 // ---- Export ----
@@ -610,6 +729,7 @@ function removeEdgeLines() {
 function refreshInfo() {
   if (!currentMesh) {
     updateInfo({ triangles: 0, vertices: 0, edges: 0, dimensions: '-' });
+    updateMeshHealth(null);
     return;
   }
   const geo = currentMesh.geometry;
@@ -629,6 +749,7 @@ function refreshInfo() {
     edges: currentEdgeData ? currentEdgeData.sharpEdges.length : 0,
     dimensions: dimStr,
   });
+  updateMeshHealth(analyzeMesh(geo));
 }
 
 // ---- Animation loop ----

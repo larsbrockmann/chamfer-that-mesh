@@ -425,6 +425,30 @@ export function buildUI(callbacks) {
   resetRow.appendChild(resetBtn);
   chamferSection.appendChild(resetRow);
 
+  // Auto-Fix Holes & Issues toggle (runs MeshFixer automatically after chamfering if issues remain)
+  const autoFixRow = toggleRow('Auto-Fix Holes & Issues', true);
+  autoFixRow.title = 'Automatically run MeshFixer after chamfering when open edges or holes are detected';
+  const autoFixInput = autoFixRow.querySelector('input');
+  autoFixInput.addEventListener('change', () => {
+    if (callbacks.onAutoFixToggle) callbacks.onAutoFixToggle(autoFixInput.checked);
+  });
+  chamferSection.appendChild(autoFixRow);
+
+  const healthBanner = el('div', 'mesh-health-banner');
+  healthBanner.id = 'mesh-health-banner';
+  healthBanner.textContent = 'Mesh status: -';
+  chamferSection.appendChild(healthBanner);
+
+  const fixerRow = el('div', 'selection-btn-row');
+  fixerRow.style.marginTop = '5px';
+  const meshFixerBtn = button('🔧 Run MeshFixer', 'btn-secondary btn-small');
+  meshFixerBtn.id = 'mesh-fixer-btn';
+  meshFixerBtn.disabled = true;
+  meshFixerBtn.title = 'Seal holes, stitch open seams, remove degenerate triangles & fix normals (undoable)';
+  meshFixerBtn.addEventListener('click', () => callbacks.onRunMeshFixer && callbacks.onRunMeshFixer());
+  fixerRow.appendChild(meshFixerBtn);
+  chamferSection.appendChild(fixerRow);
+
   sidebar.appendChild(chamferSection);
 
   // ============ VIEW section ============
@@ -488,6 +512,7 @@ export function buildUI(callbacks) {
     <div class="info-row"><span>Triangles</span><span class="info-value" id="info-triangles">0</span></div>
     <div class="info-row"><span>Vertices</span><span class="info-value" id="info-vertices">0</span></div>
     <div class="info-row"><span>Edges</span><span class="info-value" id="info-edges">0</span></div>
+    <div class="info-row"><span>Mesh Health</span><span class="info-value" id="info-mesh-health">-</span></div>
   `;
   sidebar.appendChild(infoSection);
 
@@ -555,6 +580,84 @@ export function updateEdgeCount(detected, selected, filteredCount = 0) {
   if (selEl) {
     const selCount = selected !== undefined ? selected : detected;
     selEl.textContent = `${(selCount || 0).toLocaleString()} / ${(detected || 0).toLocaleString()}`;
+  }
+}
+
+export function updateMeshHealth(stats) {
+  const infoEl = document.getElementById('info-mesh-health');
+  const bannerEl = document.getElementById('mesh-health-banner');
+  const btnEl = document.getElementById('mesh-fixer-btn');
+
+  if (!stats) {
+    if (infoEl) {
+      infoEl.textContent = '-';
+      infoEl.style.color = '';
+    }
+    if (bannerEl) {
+      bannerEl.classList.remove('health-ok', 'health-warn');
+      bannerEl.textContent = 'Mesh status: -';
+    }
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.classList.remove('btn-warning');
+      btnEl.classList.add('btn-secondary');
+    }
+    return;
+  }
+
+  if (btnEl) {
+    btnEl.disabled = false;
+  }
+
+  if (stats.isWatertight) {
+    if (infoEl) {
+      infoEl.textContent = 'Watertight ✓';
+      infoEl.style.color = 'var(--success)';
+    }
+    if (bannerEl) {
+      bannerEl.classList.remove('health-warn');
+      bannerEl.classList.add('health-ok');
+      bannerEl.textContent = '✓ Watertight manifold mesh (0 issues)';
+    }
+    if (btnEl) {
+      btnEl.classList.remove('btn-warning');
+      btnEl.classList.add('btn-secondary');
+    }
+    return;
+  }
+
+  const shortParts = [];
+  const detailParts = [];
+  if (stats.holeLoops > 0) {
+    shortParts.push(`${stats.holeLoops} ${stats.holeLoops === 1 ? 'hole' : 'holes'}`);
+    detailParts.push(`${stats.holeLoops} hole loop${stats.holeLoops > 1 ? 's' : ''}`);
+  } else if (stats.openEdges > 0) {
+    shortParts.push(`${stats.openEdges} open`);
+  }
+  if (stats.openEdges > 0) {
+    detailParts.push(`${stats.openEdges} open edge${stats.openEdges > 1 ? 's' : ''}`);
+  }
+  if (stats.nonManifoldEdges > 0) {
+    shortParts.push(`${stats.nonManifoldEdges} non-man.`);
+    detailParts.push(`${stats.nonManifoldEdges} non-manifold`);
+  }
+  if (stats.degenerateTriangles > 0) {
+    shortParts.push(`${stats.degenerateTriangles} deg.`);
+    detailParts.push(`${stats.degenerateTriangles} degenerate`);
+  }
+
+  if (infoEl) {
+    infoEl.textContent = shortParts.join(', ') || `${stats.issueCount} issues`;
+    infoEl.style.color = 'var(--accent-orange)';
+  }
+  if (bannerEl) {
+    bannerEl.classList.remove('health-ok');
+    bannerEl.classList.add('health-warn');
+    bannerEl.textContent = `⚠ Issues: ${detailParts.join(' · ') || `${stats.issueCount} found`}`;
+  }
+  if (btnEl) {
+    btnEl.classList.remove('btn-secondary');
+    btnEl.classList.add('btn-warning');
   }
 }
 
