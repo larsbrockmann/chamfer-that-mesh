@@ -1,7 +1,7 @@
 # Chamfer That Mesh
 
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Live%20Demo-00d4ff?logo=googlechrome&logoColor=white)](https://larsbrockmann.github.io/chamfer-that-mesh/)
-[![Wiki](https://img.shields.io/badge/Documentation-Wiki-blue?logo=gitbook&logoColor=white)](wiki/Home.md)
+[![Wiki](https://img.shields.io/badge/Documentation-Wiki-blue?logo=gitbook&logoColor=white)](https://github.com/larsbrockmann/chamfer-that-mesh/wiki)
 [![Deploy Status](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml/badge.svg)](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Formats](https://img.shields.io/badge/Mesh-STL%20%7C%203MF-orange.svg)](#)
@@ -25,13 +25,13 @@ A small browser tool for adding chamfers and fillets to the edges of STL and 3MF
 
 ## Documentation & Wiki
 
-Detailed guides and screenshots for all features are available in the [**Wiki**](wiki/Home.md):
+Detailed guides and screenshots for all features are available in the [**Documentation Wiki**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki):
 
-- [**UI Tour & Navigation**](wiki/UI-Tour-and-Navigation.md) — CAD orbit camera, desktop resizable sidebar, and mobile drawer.
-- [**Edge Detection & Selection**](wiki/Edge-Detection-and-Selection.md) — Angle thresholds, loop chaining, and 3D viewport picking.
-- [**Bevel Profiles & Engine**](wiki/Bevel-Profiles-and-Engine.md) — Chamfer, Fillet, and Hybrid bevels with live 3D preview.
-- [**Mesh Repair & Diagnostics**](wiki/Mesh-Repair-and-Diagnostics.md) — MeshFixer, watertight repair, and loose-part cleanup.
-- [**File Formats & Sample Library**](wiki/File-Formats-and-Sample-Library.md) — STL/3MF handling and the 3 built-in demo shapes (Pyramid, Hex Nut, Tooth Gear).
+- [**UI Tour & Navigation**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/UI-Tour-and-Navigation) — CAD orbit camera, desktop resizable sidebar, and mobile drawer.
+- [**Edge Detection & Selection**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Edge-Detection-and-Selection) — Angle thresholds, loop chaining, and 3D viewport picking.
+- [**Bevel Profiles & Engine**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Bevel-Profiles-and-Engine) — Chamfer, Fillet, and Hybrid bevels with live 3D preview.
+- [**Mesh Repair & Diagnostics**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Mesh-Repair-and-Diagnostics) — MeshFixer, watertight repair, and loose-part cleanup.
+- [**File Formats & Sample Library**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/File-Formats-and-Sample-Library) — STL/3MF handling and the 3 built-in demo shapes (Pyramid, Hex Nut, Tooth Gear).
 
 ## Usage
 
