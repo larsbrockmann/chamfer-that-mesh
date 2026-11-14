@@ -112,15 +112,15 @@ export class EdgeData {
       let r, g, b;
       if (isSel && isHovered) {
         // Hovering over an already selected edge:
-        // Vivid electric azure-blue highlight so it stays clearly in the selected family
-        r = 0.22;
-        g = 0.62;
+        // Bright glowing ice-cyan highlight, brighter than normal selected edges
+        r = 0.62;
+        g = 1.0;
         b = 1.0;
       } else if (isSel) {
-        // Ultra-Vibrant Neon Cyan for selected edges
+        // Vivid Cyan-Blue for normal selected edges
         r = 0.0;
-        g = 0.95;
-        b = 1.0;
+        g = 0.72;
+        b = 0.96;
       } else if (isHovered) {
         // Hovering over an unselected edge:
         // Bright Vivid Amber/Gold (invitation to select for chamfer)

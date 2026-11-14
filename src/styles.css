@@ -594,14 +594,14 @@ button:disabled {
 }
 
 .swatch-selected {
-  background: #00f2fe;
-  box-shadow: 0 0 6px rgba(0, 242, 254, 0.6);
+  background: #00b8f5;
+  box-shadow: 0 0 6px rgba(0, 184, 245, 0.6);
 }
 
 .swatch-hovered-sel {
-  background: #389eff;
-  border: 1px solid #00f2fe;
-  box-shadow: 0 0 8px rgba(56, 158, 255, 0.85);
+  background: #9efeff;
+  border: 1px solid #ffffff;
+  box-shadow: 0 0 8px rgba(158, 254, 255, 0.95);
 }
 
 .swatch-unselected {
