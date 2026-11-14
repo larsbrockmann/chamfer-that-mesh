@@ -1,6 +1,11 @@
 # Chamfer That Mesh
 
-**Live demo:** https://larsbrockmann.github.io/chamfer-that-mesh/
+[![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Live%20Demo-00d4ff?logo=googlechrome&logoColor=white)](https://larsbrockmann.github.io/chamfer-that-mesh/)
+[![Deploy Status](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml/badge.svg)](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Formats](https://img.shields.io/badge/Mesh-STL%20%7C%203MF-orange.svg)](#)
+[![Three.js](https://img.shields.io/badge/Three.js-r170+-black.svg?logo=three.js)](https://threejs.org/)
+[![Client-Side](https://img.shields.io/badge/Execution-100%25%20In--Browser-blueviolet.svg)](#)
 
 A small browser tool for adding chamfers and fillets to the edges of STL and 3MF models. Handy for 3D printing when you only have the mesh and not the original CAD file. Everything runs locally in your browser.
 
