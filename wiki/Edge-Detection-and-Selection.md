@@ -33,7 +33,7 @@ The detection engine parses the loaded triangle buffers into an indexed topologi
 | **Angle Threshold** | Model-optimized | `1°` to `180°` | Minimum angle between adjacent face normals required to register an edge. Lower angles detect soft curved boundaries; higher angles isolate sharp corners. |
 | **✨ Auto Button** | One-Click | Action | Analyzes the model's geometry and automatically sets the optimal angle threshold, cleanly separating surface tessellation facets from intentional sharp edges. |
 | **Convex Edges Only** | `Checked` | Boolean | Ignores concave / inner corner edges to ensure bevel subtraction cuts only along outer exterior rims. |
-| **Filter Tiny Edges** | `Unchecked` | Boolean | Strips microscopic tessellation artifacts shorter than $0.2\text{ mm}$ or $0.5\%$ of bounding box size. |
+| **Filter Tiny Edges** *(Experimental)* | `Unchecked` | Boolean | Simplifies micro-segments on noisy or faceted meshes. Keep off for clean CAD models to avoid breaking continuous loops. |
 
 ### How Auto Angle Detection Works
 If you are unsure what threshold to use or get lost adjusting the slider:

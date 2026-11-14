@@ -315,6 +315,40 @@ body.is-resizing-sidebar * {
   font-size: 0.82rem;
   color: var(--text-primary);
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.badge-experimental {
+  display: inline-block;
+  font-size: 0.60rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  margin-left: 6px;
+  vertical-align: middle;
+  line-height: 1.2;
+}
+
+.experimental-note {
+  font-size: 0.72rem;
+  color: #cbd5e1;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid #f59e0b;
+  padding: 4px 8px;
+  margin-top: 4px;
+  margin-bottom: 6px;
+  border-radius: 0 4px 4px 0;
+  line-height: 1.35;
+}
+
+.experimental-note strong {
+  color: #fbbf24;
 }
 
 .control-value {

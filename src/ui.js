@@ -304,13 +304,21 @@ export function buildUI(callbacks) {
   edgeSection.appendChild(convexRow);
 
   // Tiny Edge Filter toggle (automatic)
-  const filterRow = toggleRow('Filter Tiny Edges', false);
+  const filterRow = toggleRow('Filter Tiny Edges', false, 'Experimental');
+  filterRow.title = 'Experimental edge simplification: filters micro-segments on noisy or faceted meshes';
   const filterInput = filterRow.querySelector('input');
   edgeSection.appendChild(filterRow);
 
   // Filter options container (Action mode + Min Length)
   const filterOptionsContainer = el('div', 'filter-options-container');
   filterOptionsContainer.style.display = 'none';
+
+  const filterNote = el(
+    'div',
+    'experimental-note',
+    '⚠ <strong>Experimental:</strong> Simplifies micro-segments on noisy or faceted meshes. May break continuous loops on clean CAD models.'
+  );
+  filterOptionsContainer.appendChild(filterNote);
 
   const filterModeRow = el('div', 'control-row');
   filterModeRow.style.marginTop = '4px';
@@ -479,7 +487,7 @@ export function buildUI(callbacks) {
   const hybridTypeBtn = document.createElement('button');
   hybridTypeBtn.textContent = 'Hybrid';
   hybridTypeBtn.className = 'segment-btn';
-  hybridTypeBtn.title = 'Chamfer-Fillet Hybrid: Flat bevel with radiused transition shoulders';
+  hybridTypeBtn.title = 'Chamfer-Fillet Hybrid (Specialized): Flat 50% bevel flanked by tangent curved transition shoulders';
 
   const profileBtns = [chamferTypeBtn, filletTypeBtn, hybridTypeBtn];
   const profileValues = ['chamfer', 'fillet', 'hybrid'];
@@ -663,13 +671,20 @@ export function buildUI(callbacks) {
   chamferSection.appendChild(autoFixRow);
 
   // Remove Unconnected Parts toggle (removes broken shards and loose floating debris)
-  const removeUnconnectedRow = toggleRow('Remove Unconnected Parts', false);
+  const removeUnconnectedRow = toggleRow('Remove Unconnected Parts', false, 'Experimental');
   removeUnconnectedRow.title = 'Detect and remove broken shards or small unconnected debris during repair & chamfering';
   const removeUnconnectedInput = removeUnconnectedRow.querySelector('input');
   removeUnconnectedInput.addEventListener('change', () => {
     if (callbacks.onRemoveUnconnectedToggle) callbacks.onRemoveUnconnectedToggle(removeUnconnectedInput.checked);
   });
   chamferSection.appendChild(removeUnconnectedRow);
+
+  const removeUnconnectedNote = el(
+    'div',
+    'experimental-note',
+    '⚠ <strong>Experimental:</strong> Deletes floating debris during chamfering. May strip thin inner shells or sub-assemblies. Keep off for multi-part models.'
+  );
+  chamferSection.appendChild(removeUnconnectedNote);
 
   const healthBanner = el('div', 'mesh-health-banner');
   healthBanner.id = 'mesh-health-banner';
@@ -681,17 +696,24 @@ export function buildUI(callbacks) {
   const meshFixerBtn = button('🔧 Run MeshFixer', 'btn-secondary btn-small');
   meshFixerBtn.id = 'mesh-fixer-btn';
   meshFixerBtn.disabled = true;
-  meshFixerBtn.title = 'Seal holes, stitch open seams, remove degenerate triangles & fix normals (undoable)';
+  meshFixerBtn.title = 'Heuristic mesh repair: seals holes, stitches open seams, removes degenerate triangles (undoable)';
   meshFixerBtn.addEventListener('click', () => callbacks.onRunMeshFixer && callbacks.onRunMeshFixer());
   fixerRow.appendChild(meshFixerBtn);
 
   const cleanPartsBtn = button('🧹 Clean Loose Parts', 'btn-secondary btn-small');
   cleanPartsBtn.id = 'clean-parts-btn';
   cleanPartsBtn.disabled = true;
-  cleanPartsBtn.title = 'Remove broken shards and unconnected loose mesh components (undoable)';
+  cleanPartsBtn.title = 'Heuristic debris cleanup: removes disconnected islands < 5% mesh area (undoable)';
   cleanPartsBtn.addEventListener('click', () => callbacks.onCleanUnconnectedParts && callbacks.onCleanUnconnectedParts());
   fixerRow.appendChild(cleanPartsBtn);
   chamferSection.appendChild(fixerRow);
+
+  const repairNote = el(
+    'div',
+    'experimental-note',
+    '💡 <strong>Heuristic repair:</strong> Automated hole-filling and loose-part culling operate on raw polygon soup. Always reversible with <strong>Undo (Ctrl+Z)</strong>.'
+  );
+  chamferSection.appendChild(repairNote);
 
   sidebar.appendChild(chamferSection);
 
@@ -1068,9 +1090,13 @@ function button(text, className) {
   return btn;
 }
 
-function toggleRow(label, checked) {
+function toggleRow(label, checked, badge = null) {
   const row = el('div', 'toggle-row');
   const lbl = el('span', 'control-label', label);
+  if (badge) {
+    const badgeEl = el('span', 'badge-experimental', badge);
+    lbl.appendChild(badgeEl);
+  }
   row.appendChild(lbl);
 
   const sw = el('label', 'toggle-switch');

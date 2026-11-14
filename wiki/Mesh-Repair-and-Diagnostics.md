@@ -32,11 +32,18 @@ The studio provides both automated and on-demand repair tools:
 - When enabled in the sidebar, a sanitization pass runs immediately following every CSG chamfer operation.
 - It detects and seals any micro-holes created at complex multi-edge corner miters, keeping the model slicer-ready without manual intervention.
 
+### Remove Unconnected Parts *(Experimental)*
+- Detects and removes detached floating shards during repair and chamfering.
+- **Experimental Notice:** Disabled by default. It can strip thin interior shells or sub-assemblies on multi-body models. Keep off for multi-part designs.
+
 ### Run MeshFixer Button (`#btn-mesh-fixer`)
 For models imported with pre-existing defects, click **Run MeshFixer** to execute a comprehensive repair sequence:
 1. **Weld Duplicate Vertices:** Merges coincident vertices within a distance threshold ($\epsilon = 10^{-5}\text{ mm}$), reconstructing unified manifold edge topology.
 2. **Cull Degenerates:** Removes zero-area faces and flips inverted normals to align with adjacent surfaces.
 3. **Loop Sealing:** Identifies closed 1-manifold boundary loops and triangulates them to close open holes.
+
+> [!NOTE]
+> **Heuristic Operations:** MeshFixer and Clean Loose Parts are automated heuristic algorithms. While effective at sealing holes and salvaging broken meshes, they can modify polygon count and topology. All repairs are tracked in memory and fully reversible via **Undo (`Ctrl+Z`)**.
 
 ---
 
