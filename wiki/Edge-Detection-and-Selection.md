@@ -26,13 +26,22 @@ The detection engine parses the loaded triangle buffers into an indexed topologi
 
 ---
 
-## 2. Detection Parameters
+## 2. Detection Parameters & Auto-Detection
 
-| Parameter | Default | Range / Type | Purpose |
+| Parameter / Action | Default | Range / Type | Purpose |
 |---|---|---|---|
-| **Angle Threshold** | `30°` | `1°` to `90°` | Minimum angle between adjacent face normals required to register an edge. Lower angles detect soft curved boundaries; higher angles isolate sharp corners. |
-| **Convex Edges Only** | `Checked` | Boolean | Ignores concave / inner corner edges to ensure bevel subtraction cuts only along outer exterior rims. |
-| **Filter Tiny Edges** | `Checked` | Boolean | Strips microscopic tessellation artifacts shorter than $0.2\text{ mm}$ or $0.5\%$ of bounding box size. |
+| **Angle Threshold** | Model-optimized | `1°` to `180°` | Minimum angle between adjacent face normals required to register an edge. Lower angles detect soft curved boundaries; higher angles isolate sharp corners. |
+| **✨ Auto Button** | One-Click | Action | Analyzes the model's geometry and automatically sets the optimal angle threshold, cleanly separating surface tessellation facets from intentional sharp edges. |
+| **Convex Edges Only** | `Unchecked` | Boolean | Ignores concave / inner corner edges to ensure bevel subtraction cuts only along outer exterior rims. |
+| **Filter Tiny Edges** | `Unchecked` | Boolean | Strips microscopic tessellation artifacts shorter than $0.2\text{ mm}$ or $0.5\%$ of bounding box size. |
+
+### How Auto Angle Detection Works
+If you are unsure what threshold to use or get lost adjusting the slider:
+1. Click the minimal **`✨ Auto`** button directly beside the angle readout.
+2. The engine analyzes the distribution of all dihedral angles across the mesh.
+3. It detects the natural separation gap (or valley) between low-angle surface curvature facets (typically $< 25^\circ$) and intentional mechanical feature edges (typically $\ge 30^\circ - 90^\circ$).
+4. The slider and display update instantly, edges are re-detected, and a confirmation toast displays the chosen threshold (e.g. `✨ Auto angle threshold: 28°`).
+5. Auto-detection also runs automatically when importing a new 3D model or selecting a demo shape.
 
 ---
 

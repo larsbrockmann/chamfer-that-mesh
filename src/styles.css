@@ -325,6 +325,40 @@ body.is-resizing-sidebar * {
   font-variant-numeric: tabular-nums;
 }
 
+.control-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-auto-angle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: var(--bg-surface-secondary, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+  color: var(--text-secondary, #94a3b8);
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+}
+
+.btn-auto-angle:hover {
+  background: rgba(0, 180, 245, 0.12);
+  border-color: var(--accent, #00b4f5);
+  color: var(--accent, #00b4f5);
+}
+
+.btn-auto-angle:active {
+  transform: scale(0.96);
+}
+
 .control-number-input {
   width: 72px;
   padding: 3px 6px;

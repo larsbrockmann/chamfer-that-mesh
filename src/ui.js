@@ -265,14 +265,33 @@ export function buildUI(callbacks) {
   const edgeSection = section('Edge Detection & Selection');
 
   const angleRow = controlRow('Angle Threshold');
+  const angleActions = el('div', 'control-row-actions');
+
+  const autoAngleBtn = document.createElement('button');
+  autoAngleBtn.type = 'button';
+  autoAngleBtn.id = 'btn-auto-angle';
+  autoAngleBtn.className = 'btn-auto-angle';
+  autoAngleBtn.innerHTML = '✨ Auto';
+  autoAngleBtn.title = 'Auto-detect optimal angle threshold for this model';
+  autoAngleBtn.setAttribute('aria-label', 'Auto-detect optimal angle threshold');
+  autoAngleBtn.addEventListener('click', () => {
+    if (callbacks.onAutoAngle) callbacks.onAutoAngle();
+  });
+
   const angleValue = el('span', 'control-value', '30°');
+  angleValue.id = 'angle-value';
+
+  angleActions.appendChild(autoAngleBtn);
+  angleActions.appendChild(angleValue);
+  angleRow.appendChild(angleActions);
+
   const angleSlider = slider(0, 180, 30, 1);
+  angleSlider.id = 'angle-slider';
   angleSlider.addEventListener('input', () => {
     const v = parseFloat(angleSlider.value);
     angleValue.textContent = `${v}°`;
     callbacks.onAngleChange(v);
   });
-  angleRow.appendChild(angleValue);
   edgeSection.appendChild(angleRow);
   edgeSection.appendChild(angleSlider);
 
@@ -744,7 +763,24 @@ export function buildUI(callbacks) {
     if (edgeEl) edgeEl.textContent = info.edges.toLocaleString();
   }
 
-  return { updateInfo, fileInput, setWidth, setUndoRedoState };
+  function setAngle(angle) {
+    const val = Math.round(angle);
+    angleSlider.value = val;
+    angleValue.textContent = `${val}°`;
+  }
+
+  return { updateInfo, fileInput, setWidth, setUndoRedoState, setAngle };
+}
+
+/**
+ * Update angle threshold slider and display value in UI.
+ */
+export function setAngleThresholdUI(angle) {
+  const sliderEl = document.getElementById('angle-slider');
+  const valEl = document.getElementById('angle-value');
+  const val = Math.round(angle);
+  if (sliderEl) sliderEl.value = val;
+  if (valEl) valEl.textContent = `${val}°`;
 }
 
 /**

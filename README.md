@@ -16,7 +16,7 @@ A small browser tool for adding chamfers and fillets to the edges of STL and 3MF
 ## Features
 
 - Import and export STL and 3MF (1:1 mm scale)
-- Automatic sharp-edge detection by angle, with optional convex-only and tiny-edge filtering
+- Automatic sharp-edge detection by angle with one-click **Auto Angle Threshold** (✨ Auto), plus optional convex-only and tiny-edge filtering
 - Click edges in the 3D view to select or deselect them (whole loop or single edge)
 - Three bevel profiles: **Chamfer** (flat), **Fillet** (rounded), **Hybrid** (flat with rounded edges)
 - Built-in mesh repair and loose-part cleanup

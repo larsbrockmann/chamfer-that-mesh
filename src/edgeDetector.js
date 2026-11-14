@@ -756,3 +756,195 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
 
   return edgeData;
 }
+
+/**
+ * Automatically determine the optimal sharp-edge angle threshold in degrees for a geometry or EdgeData.
+ * Analyzes the distribution of dihedral angles between adjacent faces, identifying
+ * the natural separation gap between low-angle surface tessellation facets and
+ * intentional sharp mechanical feature edges.
+ *
+ * @param {THREE.BufferGeometry|EdgeData} geometryOrEdgeData
+ * @param {object} [options]
+ * @returns {number} optimal angle threshold in degrees (e.g. 15..60)
+ */
+export function autoDetectAngleThreshold(geometryOrEdgeData, options = {}) {
+  if (!geometryOrEdgeData) return 30;
+
+  const convexOnly = !!options.convexOnly;
+  const angles = [];
+
+  // Fast path: if EdgeData with adjacency and faceNormals is supplied
+  if (geometryOrEdgeData.adjacency instanceof Map && Array.isArray(geometryOrEdgeData.faceNormals)) {
+    const { adjacency, faceNormals, faces, vertices } = geometryOrEdgeData;
+    for (const [key, faceList] of adjacency) {
+      if (faceList.length !== 2) continue;
+      const [f1, f2] = faceList;
+      const n1 = faceNormals[f1];
+      const n2 = faceNormals[f2];
+      if (!n1 || !n2) continue;
+
+      const dot = THREE.MathUtils.clamp(n1.dot(n2), -1, 1);
+      const deg = Math.acos(dot) * (180 / Math.PI);
+      if (deg < 1.0) continue;
+
+      if (convexOnly && faces && vertices) {
+        const parts = key.split('_');
+        const vi1 = parseInt(parts[0], 10);
+        const vi2 = parseInt(parts[1], 10);
+        const opp1Idx = faces[f1].find((idx) => idx !== vi1 && idx !== vi2);
+        if (opp1Idx !== undefined) {
+          const vDiff = new THREE.Vector3().subVectors(vertices[opp1Idx], vertices[vi1]);
+          if (n2.dot(vDiff) > 0) continue;
+        }
+      }
+
+      angles.push(deg);
+    }
+  } else {
+    // Standard path: compute from BufferGeometry
+    const posAttr = geometryOrEdgeData.getAttribute ? geometryOrEdgeData.getAttribute('position') : null;
+    if (!posAttr) return 30;
+
+    const posArray = posAttr.array;
+    const indexed = !!geometryOrEdgeData.index;
+    const indices = indexed ? geometryOrEdgeData.index.array : null;
+    const triCount = indexed ? geometryOrEdgeData.index.count / 3 : posAttr.count / 3;
+
+    const EPSILON = 1e-5;
+    const CELL = EPSILON * 100;
+    const weldMap = new Map();
+    const weldedPositions = [];
+    const vertexRemap = new Int32Array(posAttr.count);
+
+    function hashKey(x, y, z) {
+      const gx = Math.round(x / CELL);
+      const gy = Math.round(y / CELL);
+      const gz = Math.round(z / CELL);
+      return `${gx},${gy},${gz}`;
+    }
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posArray[i * 3];
+      const y = posArray[i * 3 + 1];
+      const z = posArray[i * 3 + 2];
+      const key = hashKey(x, y, z);
+
+      let found = -1;
+      const bucket = weldMap.get(key);
+      if (bucket) {
+        for (let b = 0; b < bucket.length; b++) {
+          const item = bucket[b];
+          const dx = item.x - x;
+          const dy = item.y - y;
+          const dz = item.z - z;
+          if (dx * dx + dy * dy + dz * dz < EPSILON * EPSILON) {
+            found = item.idx;
+            break;
+          }
+        }
+      }
+
+      if (found >= 0) {
+        vertexRemap[i] = found;
+      } else {
+        const idx = weldedPositions.length;
+        weldedPositions.push(new THREE.Vector3(x, y, z));
+        vertexRemap[i] = idx;
+        if (!weldMap.has(key)) weldMap.set(key, []);
+        weldMap.get(key).push({ x, y, z, idx });
+      }
+    }
+
+    const faceNormals = [];
+    const faces = [];
+    const tmpA = new THREE.Vector3();
+    const tmpB = new THREE.Vector3();
+
+    for (let f = 0; f < triCount; f++) {
+      const i0 = indexed ? indices[f * 3] : f * 3;
+      const i1 = indexed ? indices[f * 3 + 1] : f * 3 + 1;
+      const i2 = indexed ? indices[f * 3 + 2] : f * 3 + 2;
+
+      const w0 = vertexRemap[i0];
+      const w1 = vertexRemap[i1];
+      const w2 = vertexRemap[i2];
+      faces.push([w0, w1, w2]);
+
+      const p0 = weldedPositions[w0];
+      const p1 = weldedPositions[w1];
+      const p2 = weldedPositions[w2];
+
+      tmpA.subVectors(p1, p0);
+      tmpB.subVectors(p2, p0);
+      const n = new THREE.Vector3().crossVectors(tmpA, tmpB).normalize();
+      faceNormals.push(n);
+    }
+
+    const edgeAdjacency = new Map();
+    for (let f = 0; f < faces.length; f++) {
+      const [a, b, c] = faces[f];
+      for (const [va, vb] of [[a, b], [b, c], [c, a]]) {
+        const k = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
+        if (!edgeAdjacency.has(k)) edgeAdjacency.set(k, []);
+        edgeAdjacency.get(k).push(f);
+      }
+    }
+
+    for (const [key, faceList] of edgeAdjacency) {
+      if (faceList.length !== 2) continue;
+      const [f1, f2] = faceList;
+      const n1 = faceNormals[f1];
+      const n2 = faceNormals[f2];
+      if (!n1 || !n2) continue;
+
+      const dot = THREE.MathUtils.clamp(n1.dot(n2), -1, 1);
+      const deg = Math.acos(dot) * (180 / Math.PI);
+      if (deg < 1.0) continue;
+
+      if (convexOnly) {
+        const parts = key.split('_');
+        const vi1 = parseInt(parts[0], 10);
+        const vi2 = parseInt(parts[1], 10);
+        const opp1Idx = faces[f1].find((idx) => idx !== vi1 && idx !== vi2);
+        if (opp1Idx !== undefined) {
+          const vDiff = new THREE.Vector3().subVectors(weldedPositions[opp1Idx], weldedPositions[vi1]);
+          if (n2.dot(vDiff) > 0) continue;
+        }
+      }
+
+      angles.push(deg);
+    }
+  }
+
+  if (angles.length === 0) return 30;
+
+  angles.sort((a, b) => a - b);
+  const minA = angles[0];
+
+  // If all non-flat angles are sharp (min >= 35 deg, e.g. cube or stepped pyramid),
+  // set comfortably below the minimum sharp feature (defaulting towards 30 deg).
+  if (minA >= 35) {
+    return Math.max(15, Math.min(30, Math.round(minA * 0.6)));
+  }
+
+  // Find the most distinct gap separating smooth facets from sharp feature edges
+  const uniqueAngles = Array.from(new Set(angles.map((a) => Math.round(a)))).sort((a, b) => a - b);
+  let bestThreshold = 30;
+  let maxGapScore = 0;
+
+  for (let i = 0; i < uniqueAngles.length - 1; i++) {
+    const a1 = uniqueAngles[i];
+    const a2 = uniqueAngles[i + 1];
+    const gap = a2 - a1;
+    if (a1 <= 40 && a2 >= 20 && gap >= 4) {
+      const score = gap * (1 + 0.05 * Math.min(a1, 30));
+      if (score > maxGapScore) {
+        maxGapScore = score;
+        const target = Math.round(a1 + Math.max(3, gap * 0.4));
+        bestThreshold = Math.min(target, a2 - 1);
+      }
+    }
+  }
+
+  return Math.max(10, Math.min(60, bestThreshold));
+}

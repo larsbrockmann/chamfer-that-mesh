@@ -15,7 +15,7 @@ import {
   syncTargetDepthToPoint,
 } from './scene.js';
 import { setupLoaders, loadFromUrl } from './loaders.js';
-import { detectEdges } from './edgeDetector.js';
+import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
 import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
 import { analyzeMesh, fixMesh, removeDisconnectedParts } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
@@ -168,11 +168,12 @@ initScene();
 
 const canvas = document.getElementById('canvas');
 
-const { updateInfo, fileInput, setWidth } = buildUI({
+const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
   onImport: () => {},
   onLoadSample: (url) => {
     loadFromUrl(url, onModelLoaded, onModelLoadError);
   },
+  onAutoAngle: () => handleAutoAngle(false),
   onExportSTL: handleExportSTL,
   onExport3MF: handleExport3MF,
   onAngleChange: (v) => {
@@ -370,8 +371,28 @@ function onModelLoaded(mesh) {
   chamferWidth = isSmall ? 0.2 : 0.5;
   setWidth(chamferWidth, 1.0);
 
+  // Auto-detect optimal angle threshold for loaded model
+  const optimalAngle = autoDetectAngleThreshold(currentMesh.geometry, { convexOnly });
+  if (typeof optimalAngle === 'number' && Number.isFinite(optimalAngle)) {
+    angleThreshold = optimalAngle;
+    if (setAngle) setAngle(optimalAngle);
+  }
+
   // Auto-detect edges (also refreshes Info panel with accurate edge count)
   handleDetectEdges();
+}
+
+function handleAutoAngle(silent = false) {
+  if (!currentMesh || !currentMesh.geometry) return;
+  const optimalAngle = autoDetectAngleThreshold(currentMesh.geometry, { convexOnly });
+  if (typeof optimalAngle === 'number' && Number.isFinite(optimalAngle)) {
+    angleThreshold = optimalAngle;
+    if (setAngle) setAngle(optimalAngle);
+    handleDetectEdges();
+    if (!silent) {
+      showToast(`✨ Auto angle threshold: ${optimalAngle}°`, 'is-selected');
+    }
+  }
 }
 
 // ---- Edge detection ----
