@@ -8,10 +8,24 @@
 [![Three.js](https://img.shields.io/badge/Three.js-r170+-black.svg?logo=three.js)](https://threejs.org/)
 [![Client-Side](https://img.shields.io/badge/Execution-100%25%20In--Browser-blueviolet.svg)](#)
 
-A small browser tool for adding chamfers and fillets to the edges of STL and 3MF models. Handy for 3D printing when you only have the mesh and not the original CAD file. Everything runs locally in your browser.
+A browser-based 3D studio for adding chamfers, fillets, and hybrid bevels to STL and 3MF models. Handy for 3D printing when you only have the mesh without original CAD solids. Everything runs 100% locally in your browser with zero server uploads.
+
+![Chamfer That Mesh Studio](docs/images/ui-overview.png)
 
 > [!NOTE]
-> STL/3MF files are just triangles, so this works on a best-effort basis. Complex corners or large bevel widths can produce holes or artifacts. Check the **Mesh Health** status before exporting. If you have the original CAD file, adding the chamfer there will give a cleaner result.
+> STL and 3MF meshes represent boundary surfaces using discrete triangles. Chamfer That Mesh uses high-performance Constructive Solid Geometry (CSG) booleans with automated mesh self-repair to generate clean, watertight chamfers on sharp feature edges.
+
+## Screenshots
+
+| Interactive Edge Selection & Live Preview | Clean CSG Chamfer Applied |
+|:---:|:---:|
+| ![Live Bevel Preview Ribbon](docs/images/chamfer-preview-ribbon.png) | ![Applied Bevel Result](docs/images/chamfer-applied.png) |
+| *Emerald live ribbon previews cutting envelope before applying* | *Watertight mitered chamfer with clean quad-like bevels* |
+
+| Precision Spur Gear Beveling | Mobile Touch Studio |
+|:---:|:---:|
+| ![Tooth Gear Watertight Chamfer](docs/images/spur-gear-chamfered.png) | ![Mobile Bottom Sheet Drawer](docs/images/mobile-layout.png) |
+| *Complex 12-tooth gear chamfered without corner spikes* | *Full-screen 3D view with draggable mobile settings drawer* |
 
 ## Features
 
