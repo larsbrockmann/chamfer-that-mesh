@@ -754,16 +754,17 @@ canvas.addEventListener('pointerleave', () => {
   }
 });
 
-// Update LineMaterial screen resolution on canvas resize
+// Update LineMaterial screen resolution on viewport/canvas resize
+const viewportEl = document.getElementById('viewport') || canvas;
 const resizeObserver = new ResizeObserver(() => {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  const w = viewportEl.clientWidth;
+  const h = viewportEl.clientHeight;
   if (w <= 0 || h <= 0) return;
   if (currentEdgeData?.setResolution) {
     currentEdgeData.setResolution(w, h);
   }
 });
-resizeObserver.observe(canvas);
+resizeObserver.observe(viewportEl);
 
 // ---- Chamfer preview ----
 function updatePreview() {

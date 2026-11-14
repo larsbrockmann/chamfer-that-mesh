@@ -17,11 +17,14 @@ const _tempVec = new THREE.Vector3();
  */
 export function initScene() {
   const canvas = document.getElementById('canvas');
+  const viewport = canvas.parentElement || document.getElementById('viewport') || canvas;
 
   // Renderer
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+  const initialWidth = viewport.clientWidth || canvas.clientWidth || window.innerWidth;
+  const initialHeight = viewport.clientHeight || canvas.clientHeight || window.innerHeight;
+  renderer.setSize(initialWidth, initialHeight, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
@@ -39,7 +42,7 @@ export function initScene() {
   // Camera
   camera = new THREE.PerspectiveCamera(
     50,
-    canvas.clientWidth / canvas.clientHeight,
+    initialWidth / Math.max(1, initialHeight),
     0.01,
     10000
   );
@@ -129,15 +132,15 @@ export function initScene() {
 
   // Resize
   const resizeObserver = new ResizeObserver(() => {
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    const w = viewport.clientWidth;
+    const h = viewport.clientHeight;
     if (w <= 0 || h <= 0) return;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   });
-  resizeObserver.observe(canvas);
+  resizeObserver.observe(viewport);
 
   return { scene, camera, renderer, controls };
 }
