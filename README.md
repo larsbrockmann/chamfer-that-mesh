@@ -1,6 +1,7 @@
 # Chamfer That Mesh
 
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Live%20Demo-00d4ff?logo=googlechrome&logoColor=white)](https://larsbrockmann.github.io/chamfer-that-mesh/)
+[![Wiki](https://img.shields.io/badge/Documentation-Wiki-blue?logo=gitbook&logoColor=white)](wiki/Home.md)
 [![Deploy Status](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml/badge.svg)](https://github.com/larsbrockmann/chamfer-that-mesh/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Formats](https://img.shields.io/badge/Mesh-STL%20%7C%203MF-orange.svg)](#)
@@ -21,6 +22,16 @@ A small browser tool for adding chamfers and fillets to the edges of STL and 3MF
 - Built-in mesh repair and loose-part cleanup
 - Undo/redo, reset to original, preview, and basic view controls
 - Works on desktop and mobile; the settings panel is resizable on desktop
+
+## Documentation & Wiki
+
+Detailed guides and screenshots for all features are available in the [**Wiki**](wiki/Home.md):
+
+- [**UI Tour & Navigation**](wiki/UI-Tour-and-Navigation.md) — 360° trackball camera, desktop resizable sidebar, and mobile drawer.
+- [**Edge Detection & Selection**](wiki/Edge-Detection-and-Selection.md) — Angle thresholds, loop chaining, and 3D viewport picking.
+- [**Bevel Profiles & Engine**](wiki/Bevel-Profiles-and-Engine.md) — Chamfer, Fillet, and Hybrid bevels with live 3D preview.
+- [**Mesh Repair & Diagnostics**](wiki/Mesh-Repair-and-Diagnostics.md) — MeshFixer, watertight repair, and loose-part cleanup.
+- [**File Formats & Sample Library**](wiki/File-Formats-and-Sample-Library.md) — STL/3MF handling and the 12 built-in test shapes.
 
 ## Usage
 
