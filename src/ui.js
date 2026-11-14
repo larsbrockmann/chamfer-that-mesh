@@ -111,6 +111,118 @@ export function buildUI(callbacks) {
     mobilePanelToggle.onclick = toggleSidebar;
   }
 
+  // ---- Desktop Sidebar Resizer ----
+  const SIDEBAR_WIDTH_STORAGE_KEY = 'chamfer_sidebar_width';
+  let resizer = document.getElementById('sidebar-resizer');
+  if (!resizer && appEl && sidebar) {
+    resizer = document.createElement('div');
+    resizer.id = 'sidebar-resizer';
+    resizer.className = 'sidebar-resizer';
+    resizer.setAttribute('role', 'separator');
+    resizer.setAttribute('aria-orientation', 'vertical');
+    resizer.setAttribute('aria-label', 'Resize settings panel');
+    resizer.tabIndex = 0;
+    resizer.title = 'Drag to resize settings panel (double-click to reset)';
+    sidebar.insertAdjacentElement('afterend', resizer);
+  }
+
+  const getMaxSidebarWidth = () =>
+    Math.max(320, Math.min(720, Math.floor(window.innerWidth * 0.6)));
+  const clampSidebarWidth = (w) =>
+    Math.max(240, Math.min(getMaxSidebarWidth(), Math.round(w)));
+
+  const applySidebarWidth = (w) => {
+    const clamped = clampSidebarWidth(w);
+    document.documentElement.style.setProperty('--sidebar-width', `${clamped}px`);
+    if (resizer) {
+      resizer.setAttribute('aria-valuemin', '240');
+      resizer.setAttribute('aria-valuemax', String(getMaxSidebarWidth()));
+      resizer.setAttribute('aria-valuenow', String(clamped));
+    }
+    return clamped;
+  };
+
+  try {
+    const savedWidth = parseFloat(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(savedWidth) && savedWidth > 0) {
+      applySidebarWidth(savedWidth);
+    }
+  } catch {
+    // Ignore storage errors in restricted environments
+  }
+
+  if (resizer) {
+    let activePointerId = null;
+
+    const finishResize = (saveWidth) => {
+      if (activePointerId === null) return;
+      if (resizer.hasPointerCapture && resizer.hasPointerCapture(activePointerId)) {
+        resizer.releasePointerCapture(activePointerId);
+      }
+      activePointerId = null;
+      resizer.classList.remove('is-resizing');
+      document.body.classList.remove('is-resizing-sidebar');
+      if (saveWidth) {
+        const currentWidth = Math.round(sidebar.getBoundingClientRect().width);
+        try {
+          localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(currentWidth)));
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    };
+
+    resizer.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      e.preventDefault();
+      activePointerId = e.pointerId;
+      if (resizer.setPointerCapture) {
+        resizer.setPointerCapture(e.pointerId);
+      }
+      resizer.classList.add('is-resizing');
+      document.body.classList.add('is-resizing-sidebar');
+    });
+
+    resizer.addEventListener('pointermove', (e) => {
+      if (activePointerId === null || e.pointerId !== activePointerId) return;
+      const sidebarLeft = sidebar.getBoundingClientRect().left;
+      applySidebarWidth(e.clientX - sidebarLeft);
+    });
+
+    resizer.addEventListener('pointerup', (e) => {
+      if (e.pointerId !== activePointerId) return;
+      finishResize(true);
+    });
+
+    resizer.addEventListener('pointercancel', (e) => {
+      if (e.pointerId !== activePointerId) return;
+      finishResize(false);
+    });
+
+    resizer.addEventListener('dblclick', () => {
+      document.documentElement.style.removeProperty('--sidebar-width');
+      resizer.removeAttribute('aria-valuenow');
+      try {
+        localStorage.removeItem(SIDEBAR_WIDTH_STORAGE_KEY);
+      } catch {
+        // Ignore storage errors
+      }
+    });
+
+    resizer.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const delta = e.key === 'ArrowRight' ? 16 : -16;
+      const currentWidth = sidebar.getBoundingClientRect().width;
+      const nextWidth = applySidebarWidth(currentWidth + delta);
+      try {
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
+      } catch {
+        // Ignore storage errors
+      }
+    });
+  }
+
   // ============ FILE section ============
   const fileSection = section('File');
   const importBtn = button('Import Model (STL / 3MF)', 'btn-primary');
