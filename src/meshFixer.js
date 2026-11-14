@@ -489,110 +489,76 @@ function computeTriArea(vertices, a, b, c) {
 }
 
 /**
- * Identify connected triangle components across valid manifold edges and mark
- * broken shards or small unconnected leftovers as removable.
+ * Identify truly unconnected mesh components (islands that share no vertex with
+ * each other) and mark only small, isolated leftovers as removable.
+ *
+ * Connectivity is vertex-based on purpose: a main body that has holes, flipped
+ * triangles or non-manifold seams must stay one component, otherwise the
+ * cleanup would shred and delete parts of the actual model.
  */
-function findConnectedComponents(vertices, tris, maxAreaRatio = 0.20) {
+function findConnectedComponents(vertices, tris, maxAreaRatio = 0.05) {
   if (!tris || tris.length === 0) return [];
 
-  const valid = new Uint8Array(tris.length);
-  const ec = new Map();
-  const hc = new Map();
-  const edgeTris = new Map();
+  // Union-find over welded vertex indices
+  const parent = new Int32Array(vertices.length);
+  for (let i = 0; i < parent.length; i++) parent[i] = i;
+  const find = (x) => {
+    while (parent[x] !== x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  const union = (x, y) => {
+    const rx = find(x);
+    const ry = find(y);
+    if (rx !== ry) parent[ry] = rx;
+  };
 
+  const valid = new Uint8Array(tris.length);
   for (let f = 0; f < tris.length; f++) {
     const [a, b, c] = tris[f];
-    if (isDegenerateTri(vertices, a, b, c)) continue;
+    if (a === b || b === c || c === a) continue;
     valid[f] = 1;
-    for (const [u, v] of [[a, b], [b, c], [c, a]]) {
-      const ek = edgeKey(u, v);
-      ec.set(ek, (ec.get(ek) || 0) + 1);
-      hc.set(`${u}->${v}`, (hc.get(`${u}->${v}`) || 0) + 1);
-      if (!edgeTris.has(ek)) edgeTris.set(ek, []);
-      edgeTris.get(ek).push(f);
+    union(a, b);
+    union(a, c);
+  }
+
+  const byRoot = new Map();
+  for (let f = 0; f < tris.length; f++) {
+    if (!valid[f]) continue;
+    const root = find(tris[f][0]);
+    let comp = byRoot.get(root);
+    if (!comp) {
+      comp = {
+        triIndices: [],
+        area: 0,
+        minX: Infinity, minY: Infinity, minZ: Infinity,
+        maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity,
+      };
+      byRoot.set(root, comp);
+    }
+    const [a, b, c] = tris[f];
+    comp.triIndices.push(f);
+    comp.area += computeTriArea(vertices, a, b, c);
+    for (const vi of [a, b, c]) {
+      const p = vertices[vi];
+      if (p.x < comp.minX) comp.minX = p.x;
+      if (p.y < comp.minY) comp.minY = p.y;
+      if (p.z < comp.minZ) comp.minZ = p.z;
+      if (p.x > comp.maxX) comp.maxX = p.x;
+      if (p.y > comp.maxY) comp.maxY = p.y;
+      if (p.z > comp.maxZ) comp.maxZ = p.z;
     }
   }
 
-  const visited = new Uint8Array(tris.length);
   const components = [];
-
-  for (let seed = 0; seed < tris.length; seed++) {
-    if (!valid[seed] || visited[seed]) continue;
-    visited[seed] = 1;
-
-    const triIndices = [seed];
-    const queue = [seed];
-    let head = 0;
-    let area = 0;
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-    const localEc = new Map();
-    const localHc = new Map();
-
-    while (head < queue.length) {
-      const f = queue[head++];
-      const [a, b, c] = tris[f];
-      area += computeTriArea(vertices, a, b, c);
-
-      for (const vi of [a, b, c]) {
-        const p = vertices[vi];
-        if (p.x < minX) minX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.z < minZ) minZ = p.z;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y > maxY) maxY = p.y;
-        if (p.z > maxZ) maxZ = p.z;
-      }
-
-      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
-        const ek = edgeKey(u, v);
-        localEc.set(ek, (localEc.get(ek) || 0) + 1);
-        localHc.set(`${u}->${v}`, (localHc.get(`${u}->${v}`) || 0) + 1);
-
-        if (
-          ec.get(ek) === 2 &&
-          hc.get(`${u}->${v}`) === 1 &&
-          hc.get(`${v}->${u}`) === 1
-        ) {
-          const adj = edgeTris.get(ek);
-          if (!adj) continue;
-          for (const nbr of adj) {
-            if (!visited[nbr]) {
-              visited[nbr] = 1;
-              triIndices.push(nbr);
-              queue.push(nbr);
-            }
-          }
-        }
-      }
-    }
-
-    let openEdges = 0;
-    let nonManifoldEdges = 0;
-    for (const [ek, localCount] of localEc) {
-      const [s0, s1] = ek.split('_');
-      const u = parseInt(s0, 10);
-      const v = parseInt(s1, 10);
-      const gCount = ec.get(ek) || 0;
-      const gf = hc.get(`${u}->${v}`) || 0;
-      const gr = hc.get(`${v}->${u}`) || 0;
-      const lf = localHc.get(`${u}->${v}`) || 0;
-      const lr = localHc.get(`${v}->${u}`) || 0;
-      if (gCount > 2 || gf > 1 || gr > 1 || localCount > 2 || lf > 1 || lr > 1) {
-        nonManifoldEdges++;
-      }
-      if (localCount === 1) {
-        openEdges++;
-      }
-    }
-
+  for (const comp of byRoot.values()) {
     components.push({
-      triIndices,
-      triCount: triIndices.length,
-      area,
-      diag: Math.hypot(maxX - minX, maxY - minY, maxZ - minZ),
-      openEdges,
-      nonManifoldEdges,
+      triIndices: comp.triIndices,
+      triCount: comp.triIndices.length,
+      area: comp.area,
+      diag: Math.hypot(comp.maxX - comp.minX, comp.maxY - comp.minY, comp.maxZ - comp.minZ),
       isRemovable: false,
     });
   }
@@ -602,11 +568,11 @@ function findConnectedComponents(vertices, tris, maxAreaRatio = 0.20) {
     const main = components[0];
     for (let idx = 1; idx < components.length; idx++) {
       const comp = components[idx];
+      // Only remove small debris: tiny surface area AND small extent compared to the main body.
+      // Large separate bodies (e.g. multi-part 3MF plates) are always kept.
       comp.isRemovable =
-        comp.area < main.area * maxAreaRatio ||
-        comp.diag < main.diag * 0.25 ||
-        comp.triCount <= 60 ||
-        ((comp.openEdges > 0 || comp.nonManifoldEdges > 0) && comp.area < main.area * 0.50);
+        comp.area < main.area * maxAreaRatio &&
+        comp.diag < main.diag * 0.5;
     }
   }
 
@@ -617,7 +583,7 @@ function findConnectedComponents(vertices, tris, maxAreaRatio = 0.20) {
  * Remove broken or unconnected secondary components from `tris`.
  */
 function pruneDisconnectedParts(vertices, tris, options = {}) {
-  const { maxAreaRatio = 0.20, keepOnlyLargest = false } = options;
+  const { maxAreaRatio = 0.05, keepOnlyLargest = false } = options;
   const components = findConnectedComponents(vertices, tris, maxAreaRatio);
   if (components.length <= 1) {
     return { tris, partsRemoved: 0, trianglesRemoved: 0 };
@@ -1458,12 +1424,13 @@ export function fixMesh(geometry, options = {}) {
  * @returns {{ geometry: THREE.BufferGeometry, partsRemoved: number, trianglesRemoved: number, beforeStats: object, afterStats: object }}
  */
 export function removeDisconnectedParts(geometry, options = {}) {
-  const { weldEps = 1e-5, maxAreaRatio = 0.20, keepOnlyLargest = false } = options;
+  const { weldEps = 1e-5, maxAreaRatio = 0.05, keepOnlyLargest = false } = options;
   const beforeStats = analyzeMesh(geometry);
   const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
+  // Only drop exact duplicates / zero-area triangles here; never touch the main body's
+  // non-manifold seams (that is MeshFixer's job), so this stays a pure loose-part cleanup.
   const prunedDeg = pruneTriangles(vertices, rawTris);
-  const finPruned = pruneNonManifoldFins(vertices, prunedDeg.tris);
-  const partRes = pruneDisconnectedParts(vertices, finPruned.tris, {
+  const partRes = pruneDisconnectedParts(vertices, prunedDeg.tris, {
     maxAreaRatio,
     keepOnlyLargest,
   });
@@ -1474,7 +1441,7 @@ export function removeDisconnectedParts(geometry, options = {}) {
   return {
     geometry: cleanGeo,
     partsRemoved: partRes.partsRemoved,
-    trianglesRemoved: prunedDeg.removed + finPruned.removed + partRes.trianglesRemoved,
+    trianglesRemoved: prunedDeg.removed + partRes.trianglesRemoved,
     beforeStats,
     afterStats,
   };

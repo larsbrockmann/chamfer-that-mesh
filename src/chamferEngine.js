@@ -19,7 +19,7 @@ export class ChamferParams {
     if (profile === 'chamfer') {
       this.segments = 1;
     } else if (profile === 'hybrid') {
-      this.segments = Math.max(3, Math.round(segments || 4));
+      this.segments = Math.max(3, Math.round(segments || 5));
     } else {
       this.segments = Math.max(1, Math.round(segments));
     }
@@ -31,10 +31,23 @@ export class ChamferParams {
  * between i1 and i2 according to the chosen profile:
  * - 'chamfer': straight chord preserving miter scale
  * - 'fillet': true tangent circular arc between Face 1 and Face 2
- * - 'hybrid': blend between flat chamfer and tangent circular fillet
+ * - 'hybrid': wide flat center chamfer flanked by tangent circular shoulder arcs
  */
 function computeProfileOffset(i1, i2, t, profile, segments) {
-  const linear = new THREE.Vector3().lerpVectors(i1, i2, t);
+  let tau = t;
+  if (profile === 'hybrid' && segments >= 3) {
+    const shoulderTau = 0.26;
+    const leftSteps = Math.max(1, Math.floor((segments - 1) / 2));
+    const rightSteps = Math.max(1, segments - 1 - leftSteps);
+    const s = Math.round(t * segments);
+    if (s <= leftSteps) {
+      tau = (s / leftSteps) * shoulderTau;
+    } else {
+      tau = 1 - shoulderTau + ((s - (leftSteps + 1)) / rightSteps) * shoulderTau;
+    }
+  }
+
+  const linear = new THREE.Vector3().lerpVectors(i1, i2, tau);
   if (profile === 'chamfer' || segments <= 1) {
     return linear;
   }
@@ -64,20 +77,17 @@ function computeProfileOffset(i1, i2, t, profile, segments) {
   const omega = Math.acos(Math.max(-1, Math.min(1, radial1.dot(radial2))));
   let radialDir;
   if (omega < 1e-5) {
-    radialDir = radial1.clone().lerp(radial2, t).normalize();
+    radialDir = radial1.clone().lerp(radial2, tau).normalize();
   } else {
     const sinOmega = Math.sin(omega);
-    const w1 = Math.sin((1 - t) * omega) / sinOmega;
-    const w2 = Math.sin(t * omega) / sinOmega;
+    const w1 = Math.sin((1 - tau) * omega) / sinOmega;
+    const w2 = Math.sin(tau * omega) / sinOmega;
     radialDir = radial1.clone().multiplyScalar(w1).addScaledVector(radial2, w2);
   }
 
   const arcUnit = center.addScaledVector(radialDir, radius);
-  const scale = s1 * (1 - t) + s2 * t;
-  const fillet = arcUnit.multiplyScalar(scale);
-
-  if (profile === 'fillet') return fillet;
-  return linear.lerp(fillet, 0.5);
+  const scale = s1 * (1 - tau) + s2 * tau;
+  return arcUnit.multiplyScalar(scale);
 }
 
 const SMOOTH_TURN_COS = Math.cos((35 * Math.PI) / 180);

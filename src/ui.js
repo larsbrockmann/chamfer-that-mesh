@@ -530,7 +530,7 @@ export function buildUI(callbacks) {
 
   const segRow = controlRow('Segments');
   const segValue = el('span', 'control-value', '1');
-  const segSlider = slider(1, 8, 1, 1);
+  const segSlider = slider(1, 12, 1, 1);
   segSlider.disabled = true;
   segRow.style.opacity = '0.5';
 
@@ -554,12 +554,14 @@ export function buildUI(callbacks) {
         segSlider.disabled = true;
         segRow.style.opacity = '0.5';
       } else if (p === 'hybrid') {
-        segSlider.value = Math.max(3, parseInt(segSlider.value) || 4);
+        const curSeg = parseInt(segSlider.value) || 1;
+        segSlider.value = curSeg <= 2 ? 5 : Math.max(3, curSeg);
         segValue.textContent = segSlider.value;
         segSlider.disabled = false;
         segRow.style.opacity = '1';
       } else {
-        segSlider.value = Math.max(2, parseInt(segSlider.value) || 4);
+        const curSeg = parseInt(segSlider.value) || 1;
+        segSlider.value = curSeg <= 2 ? 6 : Math.max(2, curSeg);
         segValue.textContent = segSlider.value;
         segSlider.disabled = false;
         segRow.style.opacity = '1';
