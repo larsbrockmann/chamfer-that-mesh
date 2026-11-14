@@ -234,9 +234,9 @@ export function buildUI(callbacks) {
   const sampleSelect = document.createElement('select');
   sampleSelect.className = 'sample-select';
   sampleSelect.innerHTML = `
-    <option value="" disabled selected>Select a demo shape...</option>
+    <option value="" disabled>Select a demo shape...</option>
     <option value="./models/stepped_pyramid.stl">Pyramid (Stepped)</option>
-    <option value="./models/hex_nut.stl">Hex Nut</option>
+    <option value="./models/hex_nut.stl" selected>Hex Nut</option>
     <option value="./models/spur_gear.stl">Tooth Gear</option>
   `;
   sampleSelect.addEventListener('change', (e) => {

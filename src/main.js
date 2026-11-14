@@ -1345,5 +1345,5 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Auto-load starter demo model (Pyramid) so user immediately sees chamfer in action
-loadFromUrl('./models/stepped_pyramid.stl', onModelLoaded, onModelLoadError);
+// Auto-load starter demo model (Hex Nut) so user immediately sees chamfer in action
+loadFromUrl('./models/hex_nut.stl', onModelLoaded, onModelLoadError);
