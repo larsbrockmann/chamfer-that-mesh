@@ -1238,9 +1238,9 @@ function harmonizeNormals(vertices, tris) {
  */
 export function fixMesh(geometry, options = {}) {
   const {
-    weldEps = 1e-5,
-    snapEps = 5e-4,
-    tJuncEps = 5e-5,
+    weldEps = 1e-4,
+    snapEps = 1e-2,
+    tJuncEps = 1e-4,
     maxHoleVertices = 150,
     removeUnconnected = false,
     _retried = false,

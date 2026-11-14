@@ -90,7 +90,7 @@ function computeProfileOffset(i1, i2, t, profile, segments) {
   return arcUnit.multiplyScalar(scale);
 }
 
-const SMOOTH_TURN_COS = Math.cos((35 * Math.PI) / 180);
+const SMOOTH_TURN_COS = -0.7; // Allow miter turns up to 135 degrees across continuous faces
 
 function getOutwardTangent(edge, vi) {
   return (edge.vi1 === vi
@@ -243,13 +243,20 @@ function buildVertexChamferFrames(edges, edgeData) {
       if (turnDot < SMOOTH_TURN_COS) continue;
 
       const aligned = alignPartnerInsets(f1, f2);
-      if (f1.n1.dot(aligned.n1) < 0.7 || f1.n2.dot(aligned.n2) < 0.7) continue;
+      const n1Dot = f1.n1.dot(aligned.n1);
+      const n2Dot = f1.n2.dot(aligned.n2);
+      const maxNormDot = Math.max(n1Dot, n2Dot);
+      const minNormDot = Math.min(n1Dot, n2Dot);
+      // Require at least one face to align continuously along the joint
+      if (maxNormDot < 0.65) continue;
 
-      compatible.push({ candIdx, turnDot });
+      // Higher score for straighter paths and aligned normals
+      const score = turnDot * 2.0 + maxNormDot * 2.0 + Math.max(-0.2, minNormDot);
+      compatible.push({ candIdx, score, turnDot });
     }
 
     if (compatible.length === 0) return -1;
-    compatible.sort((x, y) => y.turnDot - x.turnDot);
+    compatible.sort((x, y) => y.score - x.score);
     return compatible[0].candIdx;
   }
 
@@ -266,27 +273,15 @@ function buildVertexChamferFrames(edges, edgeData) {
   }
 
   function isEndpointBlocked(edge, frame, vi, extDir) {
+    const incident = incidentByVert.get(vi) || [];
+    // At intersecting corners / multi-edge junctions, clamp end extension flush to the junction
+    if (incident.length >= 2) return true;
+
     const list = vertWallNormals.get(vi);
     if (!list) return false;
     for (const fn of list) {
       if (fn.dot(frame.n1) > 0.99 || fn.dot(frame.n2) > 0.99) continue;
       if (fn.dot(extDir) < -0.15) return true;
-    }
-    // Also check opposing concave/branching incident sharp edges
-    const incident = incidentByVert.get(vi) || [];
-    for (const otherIdx of incident) {
-      const other = edges[otherIdx];
-      if (other === edge) continue;
-      if (other.isConvex === false) {
-        const dOther = getOutwardTangent(other, vi);
-        if (Math.abs(dOther.dot(extDir)) < 0.85) {
-          // A perpendicular concave junction edge exists at this corner
-          const fOther = baseFrames[otherIdx];
-          if (fOther && (fOther.n1.dot(extDir) < -0.15 || fOther.n2.dot(extDir) < -0.15)) {
-            return true;
-          }
-        }
-      }
     }
     return false;
   }
@@ -311,11 +306,11 @@ function buildVertexChamferFrames(edges, edgeData) {
         const dirI2 = sumI2.lengthSq() > 1e-10 ? sumI2.normalize() : f1.inset2.clone();
         const cn = sumCN.lengthSq() > 1e-10 ? sumCN.normalize() : f1.cornerNorm.clone();
 
-        // Symmetrical miter scale preserves perpendicular setback across smooth angles
+        // Symmetrical miter scale preserves perpendicular setback across all turn angles
         const miterDot1 = 0.5 * (f1.inset1.dot(dirI1) + aligned.i1.dot(dirI1));
         const miterDot2 = 0.5 * (f1.inset2.dot(dirI2) + aligned.i2.dot(dirI2));
-        const scale1 = 1 / Math.max(0.75, miterDot1);
-        const scale2 = 1 / Math.max(0.75, miterDot2);
+        const scale1 = 1 / Math.max(0.35, miterDot1);
+        const scale2 = 1 / Math.max(0.35, miterDot2);
 
         endpointFrames.set(key, {
           smooth: true,
@@ -606,16 +601,19 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
     arc2.push(p2.clone().addScaledVector(off, width));
   }
 
-  // Extend outer arc skirt boundaries to prevent coplanar CSG grazing
+  // Extend outer arc skirt boundaries to prevent coplanar CSG grazing (clamped at junctions)
+  const skirtExt1 = ep1.blocked ? 0 : width * 0.2;
+  const skirtExt2 = ep2.blocked ? 0 : width * 0.2;
+
   const ext0_1 = new THREE.Vector3().subVectors(arc1[0], arc1[1]);
-  if (ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), width * 0.35);
+  if (skirtExt1 > 0 && ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), skirtExt1);
   const extN_1 = new THREE.Vector3().subVectors(arc1[segments], arc1[segments - 1]);
-  if (extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), width * 0.35);
+  if (skirtExt1 > 0 && extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), skirtExt1);
 
   const ext0_2 = new THREE.Vector3().subVectors(arc2[0], arc2[1]);
-  if (ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), width * 0.35);
+  if (skirtExt2 > 0 && ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), skirtExt2);
   const extN_2 = new THREE.Vector3().subVectors(arc2[segments], arc2[segments - 1]);
-  if (extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), width * 0.35);
+  if (skirtExt2 > 0 && extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), skirtExt2);
 
   const apex1 = p1.clone().addScaledVector(ep1.cn, width * apexSign);
   const apex2 = p2.clone().addScaledVector(ep2.cn, width * apexSign);
@@ -773,7 +771,7 @@ function cleanCsgGeometry(geometry, boundsBox) {
     const ny = abz * acx - abx * acz;
     const nz = abx * acy - aby * acx;
     const crossSq = nx * nx + ny * ny + nz * nz;
-    if (crossSq < 1e-16) continue;
+    if (crossSq < 1e-12) continue;
 
     let l0 = abx * abx + aby * aby + abz * abz;
     let l1 = acx * acx + acy * acy + acz * acz;
@@ -781,7 +779,7 @@ function cleanCsgGeometry(geometry, boundsBox) {
     if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
     if (l1 > l2) { const t = l1; l1 = l2; l2 = t; }
     if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
-    if (l0 > 1e-8 && l0 + l1 < l2 && crossSq <= l0 * l1 * 1e-7) continue;
+    if (l0 > 1e-8 && (crossSq <= l0 * l1 * 1e-4 || (l0 < 1e-3 && l2 / l0 > 1600))) continue;
 
     cleaned.push(
       clamp(ax, minX, maxX), clamp(ay, minY, maxY), clamp(az, minZ, maxZ),
