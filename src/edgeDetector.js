@@ -165,10 +165,40 @@ export class EdgeData {
   }
 }
 
+function flipEdgeInPlace(e) {
+  const tmpV = e.v1;
+  e.v1 = e.v2;
+  e.v2 = tmpV;
+  const tmpVi = e.vi1;
+  e.vi1 = e.vi2;
+  e.vi2 = tmpVi;
+}
+
+function getEdgeDirFrom(edge, fromVi) {
+  return (edge.vi1 === fromVi
+    ? new THREE.Vector3().subVectors(edge.v2, edge.v1)
+    : new THREE.Vector3().subVectors(edge.v1, edge.v2)
+  ).normalize();
+}
+
+function faceNormalContinuity(eA, eB, faceNormals) {
+  if (!faceNormals) return 2;
+  const nA1 = faceNormals[eA.faceIdx1];
+  const nA2 = faceNormals[eA.faceIdx2];
+  const nB1 = faceNormals[eB.faceIdx1];
+  const nB2 = faceNormals[eB.faceIdx2];
+  if (!nA1 || !nA2 || !nB1 || !nB2) return 2;
+  return Math.max(
+    nA1.dot(nB1) + nA2.dot(nB2),
+    nA1.dot(nB2) + nA2.dot(nB1)
+  );
+}
+
 /**
- * Cluster connected sharp edges into continuous loops and open chains.
+ * Cluster connected sharp edges into continuous loops and open chains,
+ * separating convex/concave edges and preventing 3-way junction tangling.
  */
-function buildEdgeChains(sharpEdges) {
+function buildEdgeChains(sharpEdges, faceNormals) {
   const adj = new Map();
   for (let i = 0; i < sharpEdges.length; i++) {
     const e = sharpEdges[i];
@@ -180,39 +210,91 @@ function buildEdgeChains(sharpEdges) {
 
   const visited = new Set();
   const chains = [];
+  const junctionCos = Math.cos((45 * Math.PI) / 180);
+
+  function pickBestContinuation(curEdgeIdx, sharedVi) {
+    const incident = adj.get(sharedVi) || [];
+    const isJunction = incident.length > 2;
+    const cur = sharpEdges[curEdgeIdx];
+    const dIn = getEdgeDirFrom(cur, sharedVi).negate();
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const cand of incident) {
+      if (visited.has(cand.edgeIdx)) continue;
+      const candEdge = sharpEdges[cand.edgeIdx];
+      if (candEdge.isConvex !== cur.isConvex) continue;
+
+      const dOut = getEdgeDirFrom(candEdge, sharedVi);
+      const dot = dIn.dot(dOut);
+      const fnScore = faceNormalContinuity(cur, candEdge, faceNormals);
+
+      if (isJunction) {
+        if (dot < junctionCos || fnScore < 1.6) continue;
+      } else {
+        if (dot < -0.2) continue;
+      }
+
+      const score = dot + 0.5 * fnScore;
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand;
+      }
+    }
+
+    return best;
+  }
 
   for (let i = 0; i < sharpEdges.length; i++) {
     if (visited.has(i)) continue;
     const chainEdgeIndices = [i];
     visited.add(i);
 
-    let vStart = sharpEdges[i].vi1;
+    const vStart = sharpEdges[i].vi1;
     let vCurr = sharpEdges[i].vi2;
+    let fwdEdgeIdx = i;
 
     while (true) {
-      const candidates = (adj.get(vCurr) || []).filter((c) => !visited.has(c.edgeIdx));
-      if (candidates.length >= 1) {
-        const next = candidates[0];
-        visited.add(next.edgeIdx);
-        chainEdgeIndices.push(next.edgeIdx);
-        vCurr = next.other;
-        if (vCurr === vStart) break; // closed loop
-      } else {
-        break;
-      }
+      const next = pickBestContinuation(fwdEdgeIdx, vCurr);
+      if (!next) break;
+      visited.add(next.edgeIdx);
+      chainEdgeIndices.push(next.edgeIdx);
+      fwdEdgeIdx = next.edgeIdx;
+      vCurr = next.other;
+      if (vCurr === vStart) break; // closed loop
     }
 
     if (vCurr !== vStart) {
       let vBack = vStart;
+      let backEdgeIdx = i;
       while (true) {
-        const candidates = (adj.get(vBack) || []).filter((c) => !visited.has(c.edgeIdx));
-        if (candidates.length >= 1) {
-          const back = candidates[0];
-          visited.add(back.edgeIdx);
-          chainEdgeIndices.unshift(back.edgeIdx);
-          vBack = back.other;
-        } else {
-          break;
+        const back = pickBestContinuation(backEdgeIdx, vBack);
+        if (!back) break;
+        visited.add(back.edgeIdx);
+        chainEdgeIndices.unshift(back.edgeIdx);
+        backEdgeIdx = back.edgeIdx;
+        vBack = back.other;
+        if (vBack === vCurr) break;
+      }
+    }
+
+    // Orient edges consistently along the chain path
+    if (chainEdgeIndices.length >= 2) {
+      const e0 = sharpEdges[chainEdgeIndices[0]];
+      const e1 = sharpEdges[chainEdgeIndices[1]];
+      if (
+        (e0.vi1 === e1.vi1 || e0.vi1 === e1.vi2) &&
+        e0.vi2 !== e1.vi1 &&
+        e0.vi2 !== e1.vi2
+      ) {
+        flipEdgeInPlace(e0);
+      }
+      for (let k = 1; k < chainEdgeIndices.length; k++) {
+        const prev = sharpEdges[chainEdgeIndices[k - 1]];
+        const cur = sharpEdges[chainEdgeIndices[k]];
+        if (cur.vi1 !== prev.vi2 && cur.vi2 === prev.vi2) {
+          flipEdgeInPlace(cur);
         }
       }
     }
@@ -228,13 +310,29 @@ function buildEdgeChains(sharpEdges) {
 }
 
 /**
+ * Check whether both adjacent faces of two sharp edges are coplanar within 0.999 dot.
+ */
+function areFacesCoplanar(eA, eB, faceNormals) {
+  if (!faceNormals) return true;
+  const nA1 = faceNormals[eA.faceIdx1];
+  const nA2 = faceNormals[eA.faceIdx2];
+  const nB1 = faceNormals[eB.faceIdx1];
+  const nB2 = faceNormals[eB.faceIdx2];
+  if (!nA1 || !nA2 || !nB1 || !nB2) return true;
+  return (
+    (nA1.dot(nB1) >= 0.999 && nA2.dot(nB2) >= 0.999) ||
+    (nA1.dot(nB2) >= 0.999 && nA2.dot(nB1) >= 0.999)
+  );
+}
+
+/**
  * Filter and simplify detected edge chains:
  * - Drops degenerate zero-length edges.
- * - 'ignore': drops edges shorter than minEdgeLength.
- * - 'combine': merges adjacent collinear or micro-segments along the chain into continuous clean edges.
- * - 'both': combines collinear segments and drops remaining isolated micro-noise.
+ * - 'ignore': drops isolated edges shorter than minEdgeLength while preserving continuous curved loops.
+ * - 'combine': merges adjacent collinear, coplanar segments along the chain without collapsing curves.
+ * - 'both': combines collinear coplanar segments and drops remaining isolated micro-noise.
  */
-function filterAndProcessChains(chains, sharpEdges, options = {}) {
+function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
   const {
     filterTiny = true,
     minEdgeLength = 0.20,
@@ -261,7 +359,16 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
     return { edges: validEdges, chains: validChains };
   }
 
-  const cosThreshold = Math.cos((collinearAngleDeg * Math.PI) / 180);
+  // Count sharp-edge degree at each vertex across all raw sharp edges
+  const sharpDegree = new Map();
+  for (const e of sharpEdges) {
+    if (e.v1.distanceTo(e.v2) <= 1e-5) continue;
+    sharpDegree.set(e.vi1, (sharpDegree.get(e.vi1) || 0) + 1);
+    sharpDegree.set(e.vi2, (sharpDegree.get(e.vi2) || 0) + 1);
+  }
+
+  const strictAngleDeg = Math.min(collinearAngleDeg, 2.5);
+  const strictCos = Math.cos((strictAngleDeg * Math.PI) / 180);
   const newEdges = [];
   const newChains = [];
 
@@ -283,15 +390,16 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
     }
 
     // Ignore isolated micro-noise (short isolated chains with total length < minEdgeLength)
-    if ((filterMode === 'ignore' || filterMode === 'both') && totalLen < minEdgeLength && validIndices.length <= 2) {
+    if ((filterMode === 'ignore' || filterMode === 'both') && totalLen < minEdgeLength) {
       continue;
     }
 
     if (filterMode === 'ignore') {
+      const preserveCurve = validIndices.length >= 3 && totalLen >= minEdgeLength * 2;
       const chainNewIndices = [];
       for (const idx of validIndices) {
         const e = sharpEdges[idx];
-        if (e.v1.distanceTo(e.v2) >= minEdgeLength) {
+        if (preserveCurve || e.v1.distanceTo(e.v2) >= minEdgeLength) {
           const newIdx = newEdges.length;
           const cloned = { ...e, v1: e.v1.clone(), v2: e.v2.clone(), chainId: newChains.length };
           newEdges.push(cloned);
@@ -304,8 +412,8 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
       continue;
     }
 
-    // Combine or Both mode:
-    let e0 = sharpEdges[validIndices[0]];
+    // Combine or Both mode: merge only genuinely collinear, coplanar segments away from 3-way junctions
+    const e0 = sharpEdges[validIndices[0]];
     let cur = {
       v1: e0.v1.clone(),
       v2: e0.v2.clone(),
@@ -319,8 +427,9 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
       dihedralAngle: e0.dihedralAngle,
       selected: e0.selected ?? true,
     };
+    let curInitDir = new THREE.Vector3().subVectors(cur.v2, cur.v1).normalize();
 
-    const chainNewIndices = [];
+    const working = [];
 
     for (let i = 1; i < validIndices.length; i++) {
       const next = sharpEdges[validIndices[i]];
@@ -329,7 +438,7 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
       let nextVi1 = next.vi1;
       let nextVi2 = next.vi2;
 
-      // If next is reversed (next.v2 touches cur.v2)
+      // Defensive orientation check if next is reversed relative to cur.v2
       if (cur.v2.distanceToSquared(next.v2) < cur.v2.distanceToSquared(next.v1)) {
         nextV1 = next.v2;
         nextV2 = next.v1;
@@ -339,23 +448,22 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
 
       const dCur = new THREE.Vector3().subVectors(cur.v2, cur.v1).normalize();
       const dNext = new THREE.Vector3().subVectors(nextV2, nextV1).normalize();
-      const dot = dCur.dot(dNext);
-      const lenCur = cur.v1.distanceTo(cur.v2);
-      const lenNext = nextV1.distanceTo(nextV2);
+      const dChord = new THREE.Vector3().subVectors(nextV2, cur.v1).normalize();
 
-      const isCollinear = dot >= cosThreshold;
-      const isTiny = (lenCur < minEdgeLength || lenNext < minEdgeLength) && dot > 0.5;
+      const connected = cur.v2.distanceToSquared(nextV1) <= 1e-8;
+      const sameConvexity = cur.isConvex === next.isConvex;
+      const nonBranching = (sharpDegree.get(cur.vi2) || 0) <= 2;
+      const isStrictlyCollinear =
+        dCur.dot(dNext) >= strictCos &&
+        curInitDir.dot(dNext) >= strictCos &&
+        curInitDir.dot(dChord) >= strictCos;
+      const coplanar = areFacesCoplanar(cur, next, faceNormals);
 
-      if (isCollinear || isTiny) {
+      if (connected && sameConvexity && nonBranching && isStrictlyCollinear && coplanar) {
         cur.v2 = nextV2.clone();
         cur.vi2 = nextVi2;
       } else {
-        if (filterMode !== 'both' || cur.v1.distanceTo(cur.v2) >= minEdgeLength) {
-          cur.chainId = newChains.length;
-          const idx = newEdges.length;
-          newEdges.push(cur);
-          chainNewIndices.push(idx);
-        }
+        working.push(cur);
         cur = {
           v1: nextV1.clone(),
           v2: nextV2.clone(),
@@ -369,17 +477,29 @@ function filterAndProcessChains(chains, sharpEdges, options = {}) {
           dihedralAngle: next.dihedralAngle,
           selected: next.selected ?? true,
         };
+        curInitDir = dNext;
+      }
+    }
+    working.push(cur);
+
+    let finalWorking = working;
+    if (filterMode === 'both') {
+      let workingLen = 0;
+      for (const e of working) workingLen += e.v1.distanceTo(e.v2);
+      const preserveCurve = working.length >= 3 && workingLen >= minEdgeLength * 2;
+      if (!preserveCurve) {
+        finalWorking = working.filter((e) => e.v1.distanceTo(e.v2) >= minEdgeLength);
       }
     }
 
-    if (filterMode !== 'both' || cur.v1.distanceTo(cur.v2) >= minEdgeLength) {
-      cur.chainId = newChains.length;
-      const idx = newEdges.length;
-      newEdges.push(cur);
-      chainNewIndices.push(idx);
-    }
-
-    if (chainNewIndices.length > 0) {
+    if (finalWorking.length > 0) {
+      const chainNewIndices = [];
+      for (const e of finalWorking) {
+        e.chainId = newChains.length;
+        const idx = newEdges.length;
+        newEdges.push(e);
+        chainNewIndices.push(idx);
+      }
       newChains.push(chainNewIndices);
     }
   }
@@ -579,13 +699,14 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
     }
   }
 
-  const rawChains = buildEdgeChains(sharpEdges);
+  const rawChains = buildEdgeChains(sharpEdges, faceNormals);
   const rawCount = sharpEdges.length;
 
   // ---- 6. Filter & combine tiny/collinear edges ----
   const { edges: filteredEdges, chains: filteredChains } = filterAndProcessChains(
     rawChains,
     sharpEdges,
+    faceNormals,
     { filterTiny, minEdgeLength, filterMode, collinearAngleDeg }
   );
 

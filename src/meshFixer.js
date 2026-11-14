@@ -89,7 +89,18 @@ function isDegenerateTri(vertices, a, b, c, areaEpsSq = 1e-16) {
   const cx = aby * acz - abz * acy;
   const cy = abz * acx - abx * acz;
   const cz = abx * acy - aby * acx;
-  return cx * cx + cy * cy + cz * cz < areaEpsSq;
+  const crossSq = cx * cx + cy * cy + cz * cz;
+  if (crossSq < areaEpsSq) return true;
+
+  // Reject 1D obtuse collinear CSG spikes (interior angle >= 179.98 deg)
+  const bcx = vc.x - vb.x, bcy = vc.y - vb.y, bcz = vc.z - vb.z;
+  let l0 = abx * abx + aby * aby + abz * abz;
+  let l1 = acx * acx + acy * acy + acz * acz;
+  let l2 = bcx * bcx + bcy * bcy + bcz * bcz;
+  if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
+  if (l1 > l2) { const t = l1; l1 = l2; l2 = t; }
+  if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
+  return l0 > 1e-8 && l0 + l1 < l2 && crossSq <= l0 * l1 * 1e-7;
 }
 
 function canonicalTriKey(a, b, c) {
@@ -452,33 +463,53 @@ function buildManifoldMaps(tris) {
   return { ec, hc, triSet };
 }
 
+function computeTriArea(vertices, a, b, c) {
+  const va = vertices[a];
+  const vb = vertices[b];
+  const vc = vertices[c];
+  const abx = vb.x - va.x, aby = vb.y - va.y, abz = vb.z - va.z;
+  const acx = vc.x - va.x, acy = vc.y - va.y, acz = vc.z - va.z;
+  const cx = aby * acz - abz * acy;
+  const cy = abz * acx - abx * acz;
+  const cz = abx * acy - aby * acx;
+  return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+}
+
 /**
- * Remove stray CSG fin/sliver triangles that attach only along non-manifold edges
- * and have zero manifold (count === 2, opposite half-edges) neighbors.
+ * Remove stray CSG fin/sliver triangles and duplicate half-edge micro-slivers
+ * attached to non-manifold edges.
  */
-function pruneNonManifoldFins(tris) {
+function pruneNonManifoldFins(vertices, tris) {
   let current = tris;
   let totalRemoved = 0;
 
-  for (let pass = 0; pass < 6; pass++) {
+  // Stage A: remove fins with non-manifold edges that have no manifold neighbors,
+  // border an open boundary edge, or touch multiple non-manifold edges.
+  for (let pass = 0; pass < 8; pass++) {
     const { ec, hc } = buildManifoldMaps(current);
     const next = [];
     let removed = 0;
 
     for (const tri of current) {
       const [a, b, c] = tri;
-      let hasNM = false;
-      let hasManifold = false;
+      let nmCount = 0;
+      let openCount = 0;
+      let manifoldCount = 0;
 
       for (const [u, v] of [[a, b], [b, c], [c, a]]) {
         const uCount = ec.get(edgeKey(u, v)) || 0;
         const fCount = hc.get(`${u}->${v}`) || 0;
         const rCount = hc.get(`${v}->${u}`) || 0;
-        if (uCount > 2 || fCount > 1 || rCount > 1) hasNM = true;
-        if (uCount === 2 && fCount === 1 && rCount === 1) hasManifold = true;
+        if (uCount > 2 || fCount > 1 || rCount > 1) {
+          nmCount++;
+        } else if (uCount === 1) {
+          openCount++;
+        } else if (uCount === 2 && fCount === 1 && rCount === 1) {
+          manifoldCount++;
+        }
       }
 
-      if (hasNM && !hasManifold) {
+      if (nmCount > 0 && (manifoldCount === 0 || openCount > 0 || nmCount >= 2)) {
         for (const [u, v] of [[a, b], [b, c], [c, a]]) {
           const ek = edgeKey(u, v);
           ec.set(ek, Math.max(0, (ec.get(ek) || 1) - 1));
@@ -496,7 +527,196 @@ function pruneNonManifoldFins(tris) {
     if (removed === 0) break;
   }
 
+  // Stage B: remove smallest-area duplicate half-edge or non-manifold pocket slivers
+  for (let pass = 0; pass < 6; pass++) {
+    const { ec, hc } = buildManifoldMaps(current);
+    const edgeToTris = new Map();
+    for (let f = 0; f < current.length; f++) {
+      const [a, b, c] = current[f];
+      for (const [u, v] of [[a, b], [b, c], [c, a]]) {
+        const ek = edgeKey(u, v);
+        if (!edgeToTris.has(ek)) edgeToTris.set(ek, []);
+        edgeToTris.get(ek).push({ f, u, v });
+      }
+    }
+
+    const toDrop = new Set();
+    for (const [ek, entries] of edgeToTris) {
+      const uCount = ec.get(ek) || 0;
+      const [s0, s1] = ek.split('_');
+      const a = parseInt(s0, 10);
+      const b = parseInt(s1, 10);
+      const fAB = hc.get(`${a}->${b}`) || 0;
+      const fBA = hc.get(`${b}->${a}`) || 0;
+      if (uCount <= 2 && fAB <= 1 && fBA <= 1) continue;
+
+      let candidates = entries;
+      if (fAB > 1 || fBA > 1) {
+        const dupEntries = entries.filter(({ u, v }) => (hc.get(`${u}->${v}`) || 0) > 1);
+        if (dupEntries.length > 0) candidates = dupEntries;
+      }
+
+      let smallestF = -1;
+      let smallestArea = Infinity;
+      for (const { f } of candidates) {
+        const [ta, tb, tc] = current[f];
+        const area = computeTriArea(vertices, ta, tb, tc);
+        if (area < smallestArea) {
+          smallestArea = area;
+          smallestF = f;
+        }
+      }
+      if (smallestF >= 0) toDrop.add(smallestF);
+    }
+
+    if (toDrop.size === 0) break;
+    current = current.filter((_, idx) => !toDrop.has(idx));
+    totalRemoved += toDrop.size;
+  }
+
   return { tris: current, removed: totalRemoved };
+}
+
+/**
+ * Attempt bidirectional manifold-safe edge/vertex collapses on candidate open-boundary
+ * pairs `[a, b]`, choosing the direction (a->b or b->a) that reduces open edges without
+ * creating degenerate triangles, duplicate faces, non-manifold edges, or same-direction foldovers.
+ */
+function tryCollapseOpenVertices(vertices, tris, pairs) {
+  if (!pairs || pairs.length === 0) return { tris, collapsedCount: 0 };
+
+  const curTris = tris.map((t) => [...t]);
+  const { ec, hc, triSet } = buildManifoldMaps(curTris);
+  const vToTris = new Map();
+  for (let f = 0; f < curTris.length; f++) {
+    for (const v of curTris[f]) {
+      if (!vToTris.has(v)) vToTris.set(v, new Set());
+      vToTris.get(v).add(f);
+    }
+  }
+
+  function hasOpenEdgeAt(v) {
+    const fSet = vToTris.get(v);
+    if (!fSet) return false;
+    for (const f of fSet) {
+      const t = curTris[f];
+      if (!t) continue;
+      if (
+        (ec.get(edgeKey(t[0], t[1])) || 0) === 1 ||
+        (ec.get(edgeKey(t[1], t[2])) || 0) === 1 ||
+        (ec.get(edgeKey(t[2], t[0])) || 0) === 1
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function evaluateCollapse(from, to) {
+    const fSet = vToTris.get(from);
+    if (!fSet || fSet.size === 0) return null;
+
+    const eDeltas = new Map();
+    const hDeltas = new Map();
+    const seenNewKeys = new Set();
+    const updates = [];
+
+    for (const f of fSet) {
+      const t = curTris[f];
+      if (!t) continue;
+
+      for (const [u, v] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+        const ek = edgeKey(u, v);
+        eDeltas.set(ek, (eDeltas.get(ek) || 0) - 1);
+        const hk = `${u}->${v}`;
+        hDeltas.set(hk, (hDeltas.get(hk) || 0) - 1);
+      }
+
+      const nt = [
+        t[0] === from ? to : t[0],
+        t[1] === from ? to : t[1],
+        t[2] === from ? to : t[2],
+      ];
+
+      const collapsedTri = nt[0] === nt[1] || nt[1] === nt[2] || nt[2] === nt[0];
+      if (collapsedTri) {
+        updates.push({ f, oldTri: t, oldKey: canonicalTriKey(t[0], t[1], t[2]), newTri: null, newKey: null });
+        continue;
+      }
+
+      if (isDegenerateTri(vertices, nt[0], nt[1], nt[2])) return null;
+
+      const nk = canonicalTriKey(nt[0], nt[1], nt[2]);
+      if (triSet.has(nk) || seenNewKeys.has(nk)) return null;
+      seenNewKeys.add(nk);
+
+      for (const [u, v] of [[nt[0], nt[1]], [nt[1], nt[2]], [nt[2], nt[0]]]) {
+        const ek = edgeKey(u, v);
+        eDeltas.set(ek, (eDeltas.get(ek) || 0) + 1);
+        const hk = `${u}->${v}`;
+        hDeltas.set(hk, (hDeltas.get(hk) || 0) + 1);
+      }
+
+      updates.push({ f, oldTri: t, oldKey: canonicalTriKey(t[0], t[1], t[2]), newTri: nt, newKey: nk });
+    }
+
+    if (updates.length === 0) return null;
+
+    let openDelta = 0;
+    for (const [ek, d] of eDeltas) {
+      const oldC = ec.get(ek) || 0;
+      const newC = oldC + d;
+      if (newC > 2 || newC < 0) return null;
+      if (oldC === 1) openDelta--;
+      if (newC === 1) openDelta++;
+    }
+    for (const [hk, d] of hDeltas) {
+      const newH = (hc.get(hk) || 0) + d;
+      if (newH > 1 || newH < 0) return null;
+    }
+    if (openDelta > 0) return null;
+
+    return { openDelta, eDeltas, hDeltas, updates };
+  }
+
+  let collapsedCount = 0;
+  for (const [a, b] of pairs) {
+    if (a === b) continue;
+    if (!hasOpenEdgeAt(a) && !hasOpenEdgeAt(b)) continue;
+
+    const candA = evaluateCollapse(a, b);
+    const candB = evaluateCollapse(b, a);
+    let chosen = null;
+    if (candA && candB) {
+      chosen = candA.openDelta <= candB.openDelta ? candA : candB;
+    } else {
+      chosen = candA || candB;
+    }
+    if (!chosen) continue;
+
+    for (const [ek, d] of chosen.eDeltas) ec.set(ek, (ec.get(ek) || 0) + d);
+    for (const [hk, d] of chosen.hDeltas) hc.set(hk, (hc.get(hk) || 0) + d);
+
+    for (const { f, oldTri, oldKey, newTri, newKey } of chosen.updates) {
+      for (const v of oldTri) vToTris.get(v)?.delete(f);
+      triSet.delete(oldKey);
+      if (newTri) {
+        curTris[f] = newTri;
+        triSet.add(newKey);
+        for (const v of newTri) {
+          if (!vToTris.has(v)) vToTris.set(v, new Set());
+          vToTris.get(v).add(f);
+        }
+      } else {
+        curTris[f] = null;
+      }
+    }
+    collapsedCount++;
+  }
+
+  if (collapsedCount === 0) return { tris, collapsedCount: 0 };
+  const surviving = curTris.filter((t) => t !== null);
+  return { tris: pruneTriangles(vertices, surviving).tris, collapsedCount };
 }
 
 /**
@@ -575,80 +795,21 @@ function snapOpenBoundarySeams(vertices, tris, snapEps = 2.5e-4) {
 
   const pruned = pruneTriangles(vertices, tris, remap);
   const afterTopo = buildTopology(vertices, pruned.tris);
-  if (afterTopo.nonManifoldEdges <= beforeTopo.nonManifoldEdges) {
+  if (
+    afterTopo.nonManifoldEdges <= beforeTopo.nonManifoldEdges &&
+    afterTopo.openEdges <= beforeTopo.openEdges
+  ) {
     return { tris: pruned.tris, snappedCount };
   }
 
-  // Fallback: try per-vertex snaps individually using live edge counts
-  let curTris = tris.map((t) => [...t]);
-  let safeSnapped = 0;
-  const { ec } = buildManifoldMaps(curTris);
-  const vToTris = new Map();
-  for (let f = 0; f < curTris.length; f++) {
-    for (const v of curTris[f]) {
-      if (!vToTris.has(v)) vToTris.set(v, []);
-      vToTris.get(v).push(f);
-    }
-  }
-
+  // Fallback: per-pair bidirectional manifold-guarded vertex collapse
+  const pairs = [];
   for (const vIdx of bVerts) {
     const target = remap[vIdx];
-    if (target === vIdx) continue;
-    const fList = vToTris.get(vIdx);
-    if (!fList || fList.length === 0) continue;
-
-    // Test net edge-count deltas of replacing vIdx -> target across incident tris
-    const deltas = new Map();
-    const newTriEdges = [];
-    for (const f of fList) {
-      const t = curTris[f];
-      const nt = [
-        t[0] === vIdx ? target : t[0],
-        t[1] === vIdx ? target : t[1],
-        t[2] === vIdx ? target : t[2],
-      ];
-      for (const [u, v] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
-        const k = edgeKey(u, v);
-        deltas.set(k, (deltas.get(k) || 0) - 1);
-      }
-      const degenerate = nt[0] === nt[1] || nt[1] === nt[2] || nt[2] === nt[0];
-      if (!degenerate) {
-        for (const [u, v] of [[nt[0], nt[1]], [nt[1], nt[2]], [nt[2], nt[0]]]) {
-          const k = edgeKey(u, v);
-          deltas.set(k, (deltas.get(k) || 0) + 1);
-        }
-      }
-      newTriEdges.push({ f, nt });
-    }
-
-    let valid = true;
-    for (const [k, d] of deltas) {
-      if (d > 0 && (ec.get(k) || 0) + d > 2) {
-        valid = false;
-        break;
-      }
-    }
-    if (!valid) continue;
-
-    for (const [k, d] of deltas) ec.set(k, (ec.get(k) || 0) + d);
-    for (const { f, nt } of newTriEdges) {
-      curTris[f] = nt;
-      if (nt[0] !== nt[1] && nt[1] !== nt[2] && nt[2] !== nt[0]) {
-        if (!vToTris.has(target)) vToTris.set(target, []);
-        vToTris.get(target).push(f);
-      }
-    }
-    vToTris.delete(vIdx);
-    safeSnapped++;
+    if (target !== vIdx) pairs.push([vIdx, target]);
   }
-
-  if (safeSnapped === 0) return { tris, snappedCount: 0 };
-  const safePruned = pruneTriangles(vertices, curTris);
-  const safeTopo = buildTopology(vertices, safePruned.tris);
-  if (safeTopo.nonManifoldEdges > beforeTopo.nonManifoldEdges) {
-    return { tris, snappedCount: 0 };
-  }
-  return { tris: safePruned.tris, snappedCount: safeSnapped };
+  const safe = tryCollapseOpenVertices(vertices, tris, pairs);
+  return { tris: safe.tris, snappedCount: safe.collapsedCount };
 }
 
 function computeUnitNormal(va, vb, vc) {
@@ -776,7 +937,7 @@ function stitchTJunctions(vertices, tris, tJuncEps = 8e-4) {
           const y = chain[i + 1];
           if (x === y || x === w || y === w) continue;
           const nSub = computeUnitNormal(vertices[x], vertices[y], vertices[w]);
-          if (!nSub || nSub.dot(nOrig) < 0.98) {
+          if (!nSub || isDegenerateTri(vertices, x, y, w) || nSub.dot(nOrig) < 0.2) {
             valid = false;
             break;
           }
@@ -916,9 +1077,9 @@ function harmonizeNormals(vertices, tris) {
  */
 export function fixMesh(geometry, options = {}) {
   const {
-    weldEps = 1e-4,
-    snapEps = 2.5e-4,
-    tJuncEps = 8e-4,
+    weldEps = 1e-5,
+    snapEps = 5e-4,
+    tJuncEps = 5e-5,
     maxHoleVertices = 150,
     _retried = false,
     _pass2 = false,
@@ -929,7 +1090,7 @@ export function fixMesh(geometry, options = {}) {
   // Pass 1: Vertex welding + degenerate/duplicate & stray non-manifold fin pruning
   const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
   const pruned1 = pruneTriangles(vertices, rawTris);
-  const finPruned = pruneNonManifoldFins(pruned1.tris);
+  const finPruned = pruneNonManifoldFins(vertices, pruned1.tris);
   let tris = finPruned.tris;
   let degeneratesRemoved = pruned1.removed + finPruned.removed;
 
@@ -959,6 +1120,7 @@ export function fixMesh(geometry, options = {}) {
     const loops = traceHoleLoops(vertices, topo.openHalfEdges);
     const { ec, hc, triSet } = buildManifoldMaps(tris);
     const addedTris = [];
+    const degenPairs = [];
 
     for (const loopInfo of loops) {
       if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
@@ -970,7 +1132,15 @@ export function fixMesh(geometry, options = {}) {
 
         for (const tri of patch) {
           const [pa, pb, pc] = tri;
-          if (isDegenerateTri(vertices, pa, pb, pc)) continue;
+          if (isDegenerateTri(vertices, pa, pb, pc)) {
+            const triEdges = [
+              [pa, pb, vertices[pa].distanceToSquared(vertices[pb])],
+              [pb, pc, vertices[pb].distanceToSquared(vertices[pc])],
+              [pc, pa, vertices[pc].distanceToSquared(vertices[pa])],
+            ].sort((e1, e2) => e1[2] - e2[2]);
+            degenPairs.push([triEdges[0][0], triEdges[0][1]], [triEdges[1][0], triEdges[1][1]]);
+            continue;
+          }
           if (loopNormal) {
             const nCap = computeUnitNormal(vertices[pa], vertices[pb], vertices[pc]);
             if (!nCap || nCap.dot(loopNormal) < 0.85) continue;
@@ -1005,7 +1175,19 @@ export function fixMesh(geometry, options = {}) {
     if (addedTris.length > 0) {
       tris = tris.concat(addedTris);
     }
+    if (degenPairs.length > 0) {
+      const collapsed = tryCollapseOpenVertices(vertices, tris, degenPairs);
+      tris = collapsed.tris;
+      edgesStitched += collapsed.collapsedCount;
+      if (collapsed.collapsedCount > 0) holesFilled += collapsed.collapsedCount;
+    }
   }
+
+  // Post-hole-fill cleanup for any newly exposed degenerate or non-manifold slivers
+  const postHolePruned = pruneTriangles(vertices, tris);
+  const postHoleFins = pruneNonManifoldFins(vertices, postHolePruned.tris);
+  tris = postHoleFins.tris;
+  degeneratesRemoved += postHolePruned.removed + postHoleFins.removed;
 
   // Pass 5: Consistent outward normal winding (guard against increasing non-manifold edges)
   const preHarmTopo = buildTopology(vertices, tris);
@@ -1039,7 +1221,7 @@ export function fixMesh(geometry, options = {}) {
   // If coarse initial weld introduced extra non-manifold edges, retry once at tighter weldEps
   if (afterStats.nonManifoldEdges > beforeStats.nonManifoldEdges && !_retried && weldEps > 1e-5) {
     fixedGeo.dispose();
-    return fixMesh(geometry, { ...options, weldEps: 1e-5, snapEps: 1e-5, _retried: true });
+    return fixMesh(geometry, { ...options, weldEps: 1e-5, snapEps: 1e-5, tJuncEps: 5e-5, _retried: true });
   }
 
   // Run one follow-up pass when holes closed by Pass 4 unlock remaining T-junctions

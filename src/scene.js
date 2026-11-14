@@ -6,7 +6,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export let scene, camera, renderer, controls;
+export const orbitPivot = new THREE.Vector3(0, 0, 0);
 let gridHelper, axesHelper;
+const _forward = new THREE.Vector3();
+const _tempVec = new THREE.Vector3();
 
 /**
  * Initialise the Three.js scene and attach it to #canvas.
@@ -47,8 +50,36 @@ export function initScene() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
+  controls.zoomToCursor = true;
+  controls.minDistance = 0.05;
   controls.target.set(0, 0, 0);
   controls.update();
+
+  // Wrap controls.update so rotation (including damping) pivots around orbitPivot
+  // without moving the camera on pointerdown or breaking OrbitControls's spherical state.
+  const baseUpdate = controls.update.bind(controls);
+  const prevQuat = new THREE.Quaternion();
+  const prevTarget = new THREE.Vector3();
+  const deltaQuat = new THREE.Quaternion();
+  const targetOffset = new THREE.Vector3();
+  const deltaTarget = new THREE.Vector3();
+
+  controls.update = function (deltaTime) {
+    prevQuat.copy(camera.quaternion);
+    prevTarget.copy(controls.target);
+
+    const result = baseUpdate(deltaTime);
+
+    if (1 - Math.abs(prevQuat.dot(camera.quaternion)) > 1e-12) {
+      deltaQuat.copy(camera.quaternion).multiply(prevQuat.invert());
+      targetOffset.subVectors(prevTarget, orbitPivot).applyQuaternion(deltaQuat);
+      deltaTarget.addVectors(orbitPivot, targetOffset).sub(prevTarget);
+      controls.target.add(deltaTarget);
+      camera.position.add(deltaTarget);
+    }
+
+    return result;
+  };
 
   // 14-Light Omnidirectional CAD Inspection Array + Hemisphere Dome
   const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x38425e, 0.38);
@@ -117,4 +148,38 @@ export function setGridVisible(visible) {
 /** Toggle the axes helper visibility */
 export function setAxesVisible(visible) {
   if (axesHelper) axesHelper.visible = visible;
+}
+
+/**
+ * Adjust controls.target along the current view ray to match the distance to `point`
+ * without changing camera position or orientation.
+ */
+export function syncTargetDepthToPoint(point, useRadialDistance = false) {
+  if (!camera || !controls || !point) return;
+
+  _forward.subVectors(controls.target, camera.position);
+  if (_forward.lengthSq() <= 1e-10) {
+    camera.getWorldDirection(_forward);
+  } else {
+    _forward.normalize();
+  }
+
+  const dist = useRadialDistance
+    ? camera.position.distanceTo(point)
+    : _tempVec.subVectors(point, camera.position).dot(_forward);
+
+  if (dist > controls.minDistance) {
+    controls.target.copy(camera.position).addScaledVector(_forward, dist);
+  }
+}
+
+/**
+ * Set the active orbit pivot point and optionally sync controls.target depth.
+ */
+export function setOrbitPivot(point, syncTargetDepth = true, useRadialDistance = false) {
+  if (!point) return;
+  orbitPivot.copy(point);
+  if (syncTargetDepth) {
+    syncTargetDepthToPoint(point, useRadialDistance);
+  }
 }

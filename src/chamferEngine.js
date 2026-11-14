@@ -2,7 +2,7 @@
    chamferEngine.js — Continuous-chain CSG chamfer / fillet engine
    ============================================================ */
 import * as THREE from 'three';
-import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
+import { Brush, Evaluator, SUBTRACTION, ADDITION } from 'three-bvh-csg';
 
 /**
  * Parameters for the chamfer / fillet / hybrid operation.
@@ -27,29 +27,60 @@ export class ChamferParams {
 }
 
 /**
- * Compute the profile direction vector at normalized step t (0 to 1)
- * between inset1 and inset2 according to the chosen profile.
+ * Compute the un-normalized profile offset vector at normalized step t (0 to 1)
+ * between i1 and i2 according to the chosen profile:
+ * - 'chamfer': straight chord preserving miter scale
+ * - 'fillet': true tangent circular arc between Face 1 and Face 2
+ * - 'hybrid': blend between flat chamfer and tangent circular fillet
  */
-function interpolateProfileDir(i1, i2, t, profile, segments) {
-  if (profile === 'chamfer' || segments === 1) {
-    return t === 0 ? i1.clone() : (t === 1 ? i2.clone() : new THREE.Vector3().lerpVectors(i1, i2, t).normalize());
+function computeProfileOffset(i1, i2, t, profile, segments) {
+  const linear = new THREE.Vector3().lerpVectors(i1, i2, t);
+  if (profile === 'chamfer' || segments <= 1) {
+    return linear;
   }
 
-  if (profile === 'hybrid') {
-    // Chamfer-Fillet Hybrid:
-    // Central planar facet flanked by softly radiused transition shoulders
-    const flatDir = new THREE.Vector3().lerpVectors(i1, i2, t).normalize();
-    const arcDir = new THREE.Vector3().copy(i1).lerp(i2, t).normalize();
-    const centerDist = Math.abs(t - 0.5) * 2; // 0 at center, 1 at boundaries
-    const shoulderWeight = Math.pow(centerDist, 1.8) * 0.75;
-    return new THREE.Vector3().lerpVectors(flatDir, arcDir, shoulderWeight).normalize();
+  const s1 = i1.length();
+  const s2 = i2.length();
+  if (s1 < 1e-8 || s2 < 1e-8) return linear;
+
+  const u1 = i1.clone().divideScalar(s1);
+  const u2 = i2.clone().divideScalar(s2);
+  const dot = Math.max(-0.95, Math.min(0.9999, u1.dot(u2)));
+  if (1 - dot < 1e-4) return linear;
+
+  const denom = 1 + dot;
+  const center = new THREE.Vector3().addVectors(u1, u2).divideScalar(denom);
+  const radius = Math.sqrt(Math.max(0, (1 - dot) / denom));
+
+  const radial1 = new THREE.Vector3().subVectors(u1, center);
+  const radial2 = new THREE.Vector3().subVectors(u2, center);
+  const r1Len = radial1.length();
+  const r2Len = radial2.length();
+  if (r1Len < 1e-6 || r2Len < 1e-6) return linear;
+
+  radial1.divideScalar(r1Len);
+  radial2.divideScalar(r2Len);
+
+  const omega = Math.acos(Math.max(-1, Math.min(1, radial1.dot(radial2))));
+  let radialDir;
+  if (omega < 1e-5) {
+    radialDir = radial1.clone().lerp(radial2, t).normalize();
+  } else {
+    const sinOmega = Math.sin(omega);
+    const w1 = Math.sin((1 - t) * omega) / sinOmega;
+    const w2 = Math.sin(t * omega) / sinOmega;
+    radialDir = radial1.clone().multiplyScalar(w1).addScaledVector(radial2, w2);
   }
 
-  // Pure Fillet: smooth circular arc
-  return new THREE.Vector3().copy(i1).lerp(i2, t).normalize();
+  const arcUnit = center.addScaledVector(radialDir, radius);
+  const scale = s1 * (1 - t) + s2 * t;
+  const fillet = arcUnit.multiplyScalar(scale);
+
+  if (profile === 'fillet') return fillet;
+  return linear.lerp(fillet, 0.5);
 }
 
-const SMOOTH_CHAIN_DOT_THRESHOLD = -Math.cos((25 * Math.PI) / 180);
+const SMOOTH_TURN_COS = Math.cos((35 * Math.PI) / 180);
 
 function getOutwardTangent(edge, vi) {
   return (edge.vi1 === vi
@@ -58,32 +89,89 @@ function getOutwardTangent(edge, vi) {
   ).normalize();
 }
 
-function isSmoothChainVertex(vd, vi) {
-  if (!vd || vd.count !== 2 || !vd.edges || vd.edges.length !== 2) return false;
-  const d0 = getOutwardTangent(vd.edges[0], vi);
-  const d1 = getOutwardTangent(vd.edges[1], vi);
-  return d0.dot(d1) <= SMOOTH_CHAIN_DOT_THRESHOLD;
+function alignPartnerInsets(frame, partnerFrame) {
+  const sameOrder =
+    frame.inset1.dot(partnerFrame.inset1) + frame.inset2.dot(partnerFrame.inset2);
+  const swappedOrder =
+    frame.inset1.dot(partnerFrame.inset2) + frame.inset2.dot(partnerFrame.inset1);
+  if (swappedOrder > sameOrder) {
+    return {
+      n1: partnerFrame.n2,
+      n2: partnerFrame.n1,
+      i1: partnerFrame.inset2,
+      i2: partnerFrame.inset1,
+    };
+  }
+  return {
+    n1: partnerFrame.n1,
+    n2: partnerFrame.n2,
+    i1: partnerFrame.inset1,
+    i2: partnerFrame.inset2,
+  };
 }
 
 /**
- * Compute edge insets and vertex-averaged frames for continuous, seamless chamfering.
- * Prevents disconnected teeth/fins on rounded corners by matching adjacent cross-sections.
+ * Collect distinct mesh face normals at every vertex referenced by `edges`,
+ * so non-smooth endpoints can detect whether extension runs into an opposing wall.
+ */
+function buildVertexWallNormals(edges, edgeData) {
+  const neededVerts = new Set();
+  for (const e of edges) {
+    neededVerts.add(e.vi1);
+    neededVerts.add(e.vi2);
+  }
+
+  const vertWallNormals = new Map();
+  if (!edgeData?.faces || !edgeData?.faceNormals) return vertWallNormals;
+
+  for (let f = 0; f < edgeData.faces.length; f++) {
+    const face = edgeData.faces[f];
+    const fn = edgeData.faceNormals[f];
+    if (!fn) continue;
+    for (const vi of face) {
+      if (!neededVerts.has(vi)) continue;
+      let list = vertWallNormals.get(vi);
+      if (!list) {
+        list = [];
+        vertWallNormals.set(vi, list);
+      }
+      let duplicate = false;
+      for (const existing of list) {
+        if (existing.dot(fn) > 0.9999) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) list.push(fn);
+    }
+  }
+
+  return vertWallNormals;
+}
+
+/**
+ * Compute per-edge insets and pairwise-matched smooth/mitered endpoint frames
+ * without cross-contaminating 3-way junctions or sharp reflex corners.
  *
- * @param {Array<object>} edges — array of sharp edges to process
+ * @param {Array<object>} edges
  * @param {import('./edgeDetector.js').EdgeData} edgeData
- * @returns {{ edgeMap: Map<object, object>, vertexMap: Map<number, object> }}
+ * @returns {{ baseFrames: Array<object|null>, endpointFrames: Map<string, object>, smoothPartners: Map<string, number> }}
  */
 function buildVertexChamferFrames(edges, edgeData) {
-  const edgeMap = new Map();
-  const vertexMap = new Map();
+  const baseFrames = new Array(edges.length).fill(null);
+  const incidentByVert = new Map();
 
-  for (const edge of edges) {
+  for (let idx = 0; idx < edges.length; idx++) {
+    const edge = edges[idx];
     const { v1, v2, faceIdx1, faceIdx2, vi1, vi2 } = edge;
     const n1 = edgeData.faceNormals[faceIdx1];
     const n2 = edgeData.faceNormals[faceIdx2];
     if (!n1 || !n2) continue;
 
-    const edgeDir = new THREE.Vector3().subVectors(v2, v1).normalize();
+    const edgeVec = new THREE.Vector3().subVectors(v2, v1);
+    const edgeLen = edgeVec.length();
+    if (edgeLen < 1e-8) continue;
+    const edgeDir = edgeVec.divideScalar(edgeLen);
     const mid = new THREE.Vector3().addVectors(v1, v2).multiplyScalar(0.5);
 
     const inset1 = new THREE.Vector3().crossVectors(n1, edgeDir).normalize();
@@ -91,54 +179,167 @@ function buildVertexChamferFrames(edges, edgeData) {
 
     // Verify inset directions point inward into each respective face
     const [a, b, c] = edgeData.faces[faceIdx1];
-    const opp1Idx = [a, b, c].find((i) => i !== vi1 && i !== vi2);
+    const opp1Idx = edge.opp1Idx !== undefined
+      ? edge.opp1Idx
+      : [a, b, c].find((i) => i !== vi1 && i !== vi2);
     if (opp1Idx !== undefined && edgeData.vertices[opp1Idx]) {
       const toOpp1 = new THREE.Vector3().subVectors(edgeData.vertices[opp1Idx], mid);
       if (toOpp1.dot(inset1) < 0) inset1.negate();
     }
 
     const [d, e, f] = edgeData.faces[faceIdx2];
-    const opp2Idx = [d, e, f].find((i) => i !== vi1 && i !== vi2);
+    const opp2Idx = edge.opp2Idx !== undefined
+      ? edge.opp2Idx
+      : [d, e, f].find((i) => i !== vi1 && i !== vi2);
     if (opp2Idx !== undefined && edgeData.vertices[opp2Idx]) {
       const toOpp2 = new THREE.Vector3().subVectors(edgeData.vertices[opp2Idx], mid);
       if (toOpp2.dot(inset2) < 0) inset2.negate();
     }
 
-    const cornerNorm = new THREE.Vector3().addVectors(n1, n2).normalize();
+    const cornerNorm = new THREE.Vector3().addVectors(n1, n2);
+    if (cornerNorm.lengthSq() > 1e-10) {
+      cornerNorm.normalize();
+    } else {
+      cornerNorm.copy(n1);
+    }
 
-    edgeMap.set(edge, { inset1, inset2, cornerNorm, n1, n2, edgeDir });
+    baseFrames[idx] = { inset1, inset2, cornerNorm, n1, n2, edgeDir, edgeLen };
 
     for (const vi of [vi1, vi2]) {
-      if (!vertexMap.has(vi)) {
-        vertexMap.set(vi, {
-          refInset1: inset1.clone(),
-          refInset2: inset2.clone(),
-          sumInset1: inset1.clone(),
-          sumInset2: inset2.clone(),
-          sumCornerNorm: cornerNorm.clone(),
-          count: 1,
-          edges: [edge],
-        });
-      } else {
-        const vd = vertexMap.get(vi);
-        const swap =
-          inset1.dot(vd.refInset1) + inset2.dot(vd.refInset2) <
-          inset1.dot(vd.refInset2) + inset2.dot(vd.refInset1);
-        vd.sumInset1.add(swap ? inset2 : inset1);
-        vd.sumInset2.add(swap ? inset1 : inset2);
-        vd.sumCornerNorm.add(cornerNorm);
-        vd.count++;
-        vd.edges.push(edge);
+      if (!incidentByVert.has(vi)) incidentByVert.set(vi, []);
+      incidentByVert.get(vi).push(idx);
+    }
+  }
+
+  const vertWallNormals = buildVertexWallNormals(edges, edgeData);
+  const smoothPartners = new Map();
+
+  function findBestPartnerAtVertex(edgeIdx, vi) {
+    const f1 = baseFrames[edgeIdx];
+    const edge = edges[edgeIdx];
+    const incident = incidentByVert.get(vi) || [];
+    const dIn = getOutwardTangent(edge, vi).negate();
+
+    const compatible = [];
+    for (const candIdx of incident) {
+      if (candIdx === edgeIdx) continue;
+      const cand = edges[candIdx];
+      const f2 = baseFrames[candIdx];
+      if (!f2) continue;
+      if ((cand.isConvex !== false) !== (edge.isConvex !== false)) continue;
+
+      const dOut = getOutwardTangent(cand, vi);
+      const turnDot = dIn.dot(dOut);
+      if (turnDot < SMOOTH_TURN_COS) continue;
+
+      const aligned = alignPartnerInsets(f1, f2);
+      if (f1.n1.dot(aligned.n1) < 0.7 || f1.n2.dot(aligned.n2) < 0.7) continue;
+
+      compatible.push({ candIdx, turnDot });
+    }
+
+    if (compatible.length === 0) return -1;
+    compatible.sort((x, y) => y.turnDot - x.turnDot);
+    return compatible[0].candIdx;
+  }
+
+  // Pair vertices mutual-best so 3-way junctions pair only the two continuing curve edges
+  for (let idx = 0; idx < edges.length; idx++) {
+    if (!baseFrames[idx]) continue;
+    const edge = edges[idx];
+    for (const [endSide, vi] of [[1, edge.vi1], [2, edge.vi2]]) {
+      const pIdx = findBestPartnerAtVertex(idx, vi);
+      if (pIdx >= 0 && findBestPartnerAtVertex(pIdx, vi) === idx) {
+        smoothPartners.set(`${idx}:${endSide}`, pIdx);
       }
     }
   }
 
-  return { edgeMap, vertexMap };
+  function isEndpointBlocked(edge, frame, vi, extDir) {
+    const list = vertWallNormals.get(vi);
+    if (!list) return false;
+    for (const fn of list) {
+      if (fn.dot(frame.n1) > 0.99 || fn.dot(frame.n2) > 0.99) continue;
+      if (fn.dot(extDir) < -0.15) return true;
+    }
+    // Also check opposing concave/branching incident sharp edges
+    const incident = incidentByVert.get(vi) || [];
+    for (const otherIdx of incident) {
+      const other = edges[otherIdx];
+      if (other === edge) continue;
+      if (other.isConvex === false) {
+        const dOther = getOutwardTangent(other, vi);
+        if (Math.abs(dOther.dot(extDir)) < 0.85) {
+          // A perpendicular concave junction edge exists at this corner
+          const fOther = baseFrames[otherIdx];
+          if (fOther && (fOther.n1.dot(extDir) < -0.15 || fOther.n2.dot(extDir) < -0.15)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  const endpointFrames = new Map();
+  for (let idx = 0; idx < edges.length; idx++) {
+    const f1 = baseFrames[idx];
+    if (!f1) continue;
+    const edge = edges[idx];
+
+    for (const [endSide, vi] of [[1, edge.vi1], [2, edge.vi2]]) {
+      const key = `${idx}:${endSide}`;
+      const pIdx = smoothPartners.get(key);
+      if (pIdx !== undefined) {
+        const f2 = baseFrames[pIdx];
+        const aligned = alignPartnerInsets(f1, f2);
+        const sumI1 = new THREE.Vector3().addVectors(f1.inset1, aligned.i1);
+        const sumI2 = new THREE.Vector3().addVectors(f1.inset2, aligned.i2);
+        const sumCN = new THREE.Vector3().addVectors(f1.cornerNorm, f2.cornerNorm);
+
+        const dirI1 = sumI1.lengthSq() > 1e-10 ? sumI1.normalize() : f1.inset1.clone();
+        const dirI2 = sumI2.lengthSq() > 1e-10 ? sumI2.normalize() : f1.inset2.clone();
+        const cn = sumCN.lengthSq() > 1e-10 ? sumCN.normalize() : f1.cornerNorm.clone();
+
+        // Symmetrical miter scale preserves perpendicular setback across smooth angles
+        const miterDot1 = 0.5 * (f1.inset1.dot(dirI1) + aligned.i1.dot(dirI1));
+        const miterDot2 = 0.5 * (f1.inset2.dot(dirI2) + aligned.i2.dot(dirI2));
+        const scale1 = 1 / Math.max(0.75, miterDot1);
+        const scale2 = 1 / Math.max(0.75, miterDot2);
+
+        endpointFrames.set(key, {
+          smooth: true,
+          blocked: false,
+          i1: dirI1.multiplyScalar(scale1),
+          i2: dirI2.multiplyScalar(scale2),
+          cn,
+        });
+      } else {
+        const extDir = endSide === 1
+          ? f1.edgeDir.clone().negate()
+          : f1.edgeDir.clone();
+        const blocked = isEndpointBlocked(edge, f1, vi, extDir);
+        const wallNormals = (vertWallNormals.get(vi) || []).filter(
+          (fn) => fn.dot(f1.n1) <= 0.99 && fn.dot(f1.n2) <= 0.99
+        );
+        endpointFrames.set(key, {
+          smooth: false,
+          blocked,
+          wallNormals,
+          i1: f1.inset1.clone(),
+          i2: f1.inset2.clone(),
+          cn: f1.cornerNorm.clone(),
+        });
+      }
+    }
+  }
+
+  return { baseFrames, endpointFrames, smoothPartners };
 }
 
 /**
  * Create a preview overlay of the chamfer/fillet faces along the detected sharp edges.
- * Uses vertex-aligned frames so preview ribbons on curves connect seamlessly.
+ * Uses pairwise vertex-aligned frames so preview ribbons on curves connect seamlessly.
  *
  * @param {import('./edgeDetector.js').EdgeData} edgeData
  * @param {ChamferParams} params
@@ -152,35 +353,35 @@ export function previewChamfer(edgeData, params) {
   if (!edges || edges.length === 0) return group;
 
   const { width, segments, profile = 'chamfer' } = params;
-  const { edgeMap, vertexMap } = buildVertexChamferFrames(edges, edgeData);
+  const { baseFrames, endpointFrames } = buildVertexChamferFrames(edges, edgeData);
   const positions = [];
   const linePositions = [];
   const surfaceBias = Math.max(0.008, width * 0.008);
 
-  for (const edge of edges) {
-    const frame = edgeMap.get(edge);
+  for (let idx = 0; idx < edges.length; idx++) {
+    const frame = baseFrames[idx];
     if (!frame) continue;
+    const edge = edges[idx];
+    const { v1, v2 } = edge;
 
-    const { vi1, vi2, v1, v2 } = edge;
-    const vd1 = vertexMap.get(vi1);
-    const vd2 = vertexMap.get(vi2);
+    const ep1 = endpointFrames.get(`${idx}:1`);
+    const ep2 = endpointFrames.get(`${idx}:2`);
+    const i1_v1 = ep1 ? ep1.i1 : frame.inset1;
+    const i2_v1 = ep1 ? ep1.i2 : frame.inset2;
+    const cn_v1 = ep1 ? ep1.cn : frame.cornerNorm;
 
-    const i1_v1 = vd1 && vd1.count > 1 ? vd1.sumInset1.clone().normalize() : frame.inset1;
-    const i2_v1 = vd1 && vd1.count > 1 ? vd1.sumInset2.clone().normalize() : frame.inset2;
-    const cn_v1 = vd1 && vd1.count > 1 ? vd1.sumCornerNorm.clone().normalize() : frame.cornerNorm;
-
-    const i1_v2 = vd2 && vd2.count > 1 ? vd2.sumInset1.clone().normalize() : frame.inset1;
-    const i2_v2 = vd2 && vd2.count > 1 ? vd2.sumInset2.clone().normalize() : frame.inset2;
-    const cn_v2 = vd2 && vd2.count > 1 ? vd2.sumCornerNorm.clone().normalize() : frame.cornerNorm;
+    const i1_v2 = ep2 ? ep2.i1 : frame.inset1;
+    const i2_v2 = ep2 ? ep2.i2 : frame.inset2;
+    const cn_v2 = ep2 ? ep2.cn : frame.cornerNorm;
 
     const stripVerts = [];
     for (let s = 0; s <= segments; s++) {
       const t = s / segments;
-      const dir1 = interpolateProfileDir(i1_v1, i2_v1, t, profile, segments);
-      const dir2 = interpolateProfileDir(i1_v2, i2_v2, t, profile, segments);
+      const off1 = computeProfileOffset(i1_v1, i2_v1, t, profile, segments);
+      const off2 = computeProfileOffset(i1_v2, i2_v2, t, profile, segments);
 
-      const p1 = v1.clone().addScaledVector(dir1, width);
-      const p2 = v2.clone().addScaledVector(dir2, width);
+      const p1 = v1.clone().addScaledVector(off1, width);
+      const p2 = v2.clone().addScaledVector(off2, width);
       stripVerts.push(p1, p2);
 
       // Record rib lines: outer cut boundaries sit just above respective faces,
@@ -206,7 +407,6 @@ export function previewChamfer(edgeData, params) {
     }
 
     // Build visible surface setback overlay quads along Face 1 & Face 2
-    // so convex edges visibly show the bevel width creeping inward across faces.
     const f1v1 = v1.clone().addScaledVector(frame.n1, surfaceBias);
     const f1v2 = v2.clone().addScaledVector(frame.n1, surfaceBias);
     const f1s1 = stripVerts[0].clone().addScaledVector(frame.n1, surfaceBias);
@@ -292,211 +492,356 @@ function pushTriOutward(arr, a, b, c, centroid) {
   }
 }
 
-function resolveEndpointFrame(frame, vd, isSmooth) {
-  if (
-    isSmooth &&
-    vd.sumInset1.lengthSq() > 1e-10 &&
-    vd.sumInset2.lengthSq() > 1e-10
-  ) {
-    const avg1 = vd.sumInset1.clone().normalize();
-    const avg2 = vd.sumInset2.clone().normalize();
-    const swap =
-      frame.inset1.dot(avg1) + frame.inset2.dot(avg2) <
-      frame.inset1.dot(avg2) + frame.inset2.dot(avg1);
-    return {
-      i1: swap ? avg2 : avg1,
-      i2: swap ? avg1 : avg2,
-      cn: vd.sumCornerNorm.lengthSq() > 1e-10
-        ? vd.sumCornerNorm.clone().normalize()
-        : frame.cornerNorm,
-    };
-  }
-  return { i1: frame.inset1, i2: frame.inset2, cn: frame.cornerNorm };
-}
-
-function partitionSmoothChains(edges, edgeMap, vertexMap) {
+/**
+ * Group connected edges into smooth chains and record non-smooth endpoint vertices per chain.
+ */
+function groupSmoothChains(edges, baseFrames, smoothPartners) {
   const edgeToChain = new Map();
   const chains = [];
 
-  for (const edge of edges) {
-    if (edgeToChain.has(edge) || !edgeMap.has(edge)) continue;
-    const chain = [edge];
-    edgeToChain.set(edge, chains.length);
-    const queue = [edge];
+  for (let idx = 0; idx < edges.length; idx++) {
+    if (edgeToChain.has(idx) || !baseFrames[idx]) continue;
+    const chain = [idx];
+    edgeToChain.set(idx, chains.length);
+    const queue = [idx];
 
     while (queue.length > 0) {
-      const cur = queue.pop();
-      for (const vi of [cur.vi1, cur.vi2]) {
-        const vd = vertexMap.get(vi);
-        if (!isSmoothChainVertex(vd, vi)) continue;
-        for (const nb of vd.edges) {
-          if (!edgeToChain.has(nb) && edgeMap.has(nb)) {
-            edgeToChain.set(nb, chains.length);
-            chain.push(nb);
-            queue.push(nb);
-          }
+      const curIdx = queue.pop();
+      for (const endSide of [1, 2]) {
+        const pIdx = smoothPartners.get(`${curIdx}:${endSide}`);
+        if (pIdx !== undefined && !edgeToChain.has(pIdx) && baseFrames[pIdx]) {
+          edgeToChain.set(pIdx, chains.length);
+          chain.push(pIdx);
+          queue.push(pIdx);
         }
       }
     }
     chains.push(chain);
   }
 
-  const cornerVertToChains = new Map();
-  chains.forEach((chain, cIdx) => {
-    for (const e of chain) {
-      for (const vi of [e.vi1, e.vi2]) {
-        if (!isSmoothChainVertex(vertexMap.get(vi), vi)) {
-          if (!cornerVertToChains.has(vi)) cornerVertToChains.set(vi, new Set());
-          cornerVertToChains.get(vi).add(cIdx);
+  const cornerVertsPerChain = chains.map((chain) => {
+    const verts = new Set();
+    for (const idx of chain) {
+      const e = edges[idx];
+      for (const [endSide, vi] of [[1, e.vi1], [2, e.vi2]]) {
+        if (!smoothPartners.has(`${idx}:${endSide}`)) {
+          verts.add(vi);
         }
       }
     }
+    return verts;
   });
 
-  const maxPasses = edges.length <= 60 ? 4 : 2;
-  const chainColor = new Array(chains.length).fill(-1);
-
-  for (let cIdx = 0; cIdx < chains.length; cIdx++) {
-    const conflicts = new Int32Array(maxPasses);
-    for (const e of chains[cIdx]) {
-      for (const vi of [e.vi1, e.vi2]) {
-        const sharing = cornerVertToChains.get(vi);
-        if (!sharing) continue;
-        for (const other of sharing) {
-          if (other < cIdx && chainColor[other] >= 0) {
-            conflicts[chainColor[other]]++;
-          }
-        }
-      }
-    }
-    let bestPass = 0;
-    for (let p = 1; p < maxPasses; p++) {
-      if (conflicts[p] < conflicts[bestPass]) bestPass = p;
-    }
-    chainColor[cIdx] = bestPass;
-  }
-
-  const passes = Array.from({ length: maxPasses }, () => []);
-  for (let cIdx = 0; cIdx < chains.length; cIdx++) {
-    passes[chainColor[cIdx]].push(...chains[cIdx]);
-  }
-  return passes.filter((p) => p.length > 0);
+  return { chains, cornerVertsPerChain };
 }
 
 /**
- * Apply chamfer/fillet to geometry using smooth-chain multi-pass CSG subtraction.
- * Consistent outward prism winding and extended outer skirts prevent grazing CSG holes.
+ * Slide non-smooth concave endpoint cross-section points back flush to adjacent outer wall planes.
+ */
+function trimSectionToWalls(points, anchorPt, slideDir, wallNormals, maxSlide) {
+  if (!wallNormals || wallNormals.length === 0) return;
+  for (const fn of wallNormals) {
+    const dirDot = -slideDir.dot(fn); // extDir.dot(fn)
+    if (dirDot <= 0.15) continue;
+    for (const q of points) {
+      const excess =
+        (q.x - anchorPt.x) * fn.x +
+        (q.y - anchorPt.y) * fn.y +
+        (q.z - anchorPt.z) * fn.z;
+      if (excess > 0) {
+        const step = Math.min(maxSlide, excess / dirDot);
+        q.addScaledVector(slideDir, step);
+      }
+    }
+  }
+}
+
+/**
+ * Append a closed, outward-oriented prism for one edge to `cutterPositions`.
+ */
+function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, apexSign, cutterPositions) {
+  const isConvex = edge.isConvex !== false;
+
+  let ext1 = 0;
+  if (!ep1.smooth) {
+    if (ep1.blocked) {
+      ext1 = Math.min(width * 0.02, frame.edgeLen * 0.05);
+    } else if (isConvex) {
+      ext1 = Math.min(width * 0.5, frame.edgeLen * 0.45);
+    }
+  }
+
+  let ext2 = 0;
+  if (!ep2.smooth) {
+    if (ep2.blocked) {
+      ext2 = Math.min(width * 0.02, frame.edgeLen * 0.05);
+    } else if (isConvex) {
+      ext2 = Math.min(width * 0.5, frame.edgeLen * 0.45);
+    }
+  }
+
+  const p1 = ext1 > 0 ? edge.v1.clone().addScaledVector(frame.edgeDir, -ext1) : edge.v1;
+  const p2 = ext2 > 0 ? edge.v2.clone().addScaledVector(frame.edgeDir, ext2) : edge.v2;
+
+  const arc1 = [];
+  for (let s = 0; s <= segments; s++) {
+    const t = s / segments;
+    const off = computeProfileOffset(ep1.i1, ep1.i2, t, profile, segments);
+    arc1.push(p1.clone().addScaledVector(off, width));
+  }
+  const arc2 = [];
+  for (let s = 0; s <= segments; s++) {
+    const t = s / segments;
+    const off = computeProfileOffset(ep2.i1, ep2.i2, t, profile, segments);
+    arc2.push(p2.clone().addScaledVector(off, width));
+  }
+
+  // Extend outer arc skirt boundaries to prevent coplanar CSG grazing
+  const ext0_1 = new THREE.Vector3().subVectors(arc1[0], arc1[1]);
+  if (ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), width * 0.35);
+  const extN_1 = new THREE.Vector3().subVectors(arc1[segments], arc1[segments - 1]);
+  if (extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), width * 0.35);
+
+  const ext0_2 = new THREE.Vector3().subVectors(arc2[0], arc2[1]);
+  if (ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), width * 0.35);
+  const extN_2 = new THREE.Vector3().subVectors(arc2[segments], arc2[segments - 1]);
+  if (extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), width * 0.35);
+
+  const apex1 = p1.clone().addScaledVector(ep1.cn, width * apexSign);
+  const apex2 = p2.clone().addScaledVector(ep2.cn, width * apexSign);
+
+  // Trim concave non-smooth end-caps flush against adjacent outer walls so additions never poke into air
+  if (!isConvex) {
+    const maxSlide = frame.edgeLen * 0.45;
+    if (!ep1.smooth) {
+      trimSectionToWalls([...arc1, apex1], edge.v1, frame.edgeDir, ep1.wallNormals, maxSlide);
+    }
+    if (!ep2.smooth) {
+      trimSectionToWalls(
+        [...arc2, apex2],
+        edge.v2,
+        frame.edgeDir.clone().negate(),
+        ep2.wallNormals,
+        maxSlide
+      );
+    }
+  }
+
+  // Use wedge spine midpoint between apex and bevel arc midpoint so centroid
+  // always stays strictly inside both convex and concave/acute fillet prisms.
+  const midIdx = Math.floor(segments / 2);
+  const arc1Mid = segments === 1
+    ? new THREE.Vector3().addVectors(arc1[0], arc1[1]).multiplyScalar(0.5)
+    : arc1[midIdx];
+  const arc2Mid = segments === 1
+    ? new THREE.Vector3().addVectors(arc2[0], arc2[1]).multiplyScalar(0.5)
+    : arc2[midIdx];
+  const centroid = new THREE.Vector3()
+    .add(apex1)
+    .add(apex2)
+    .add(arc1Mid)
+    .add(arc2Mid)
+    .multiplyScalar(0.25);
+
+  if (!ep1.smooth) {
+    for (let s = 0; s < segments; s++) {
+      pushTriOutward(cutterPositions, apex1, arc1[s], arc1[s + 1], centroid);
+    }
+  }
+  if (!ep2.smooth) {
+    for (let s = 0; s < segments; s++) {
+      pushTriOutward(cutterPositions, apex2, arc2[s + 1], arc2[s], centroid);
+    }
+  }
+
+  pushTriOutward(cutterPositions, apex1, apex2, arc2[0], centroid);
+  pushTriOutward(cutterPositions, apex1, arc2[0], arc1[0], centroid);
+
+  const last = segments;
+  pushTriOutward(cutterPositions, arc1[last], arc2[last], apex2, centroid);
+  pushTriOutward(cutterPositions, arc1[last], apex2, apex1, centroid);
+
+  for (let s = 0; s < segments; s++) {
+    pushTriOutward(cutterPositions, arc1[s], arc1[s + 1], arc2[s + 1], centroid);
+    pushTriOutward(cutterPositions, arc1[s], arc2[s + 1], arc2[s], centroid);
+  }
+}
+
+const CSG_BATCH_SIZE = 500;
+const MAX_CSG_PASSES = 16;
+
+function chainsConflict(cA, cB, chainBoxes, cornerVertsPerChain) {
+  if (chainBoxes[cA].intersectsBox(chainBoxes[cB])) return true;
+  const vertsA = cornerVertsPerChain[cA];
+  const vertsB = cornerVertsPerChain[cB];
+  for (const v of vertsA) {
+    if (vertsB.has(v)) return true;
+  }
+  return false;
+}
+
+function scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, edgePositions) {
+  const order = chains.map((_, cIdx) => cIdx);
+  order.sort((a, b) => {
+    let lenA = 0;
+    for (const idx of chains[a]) lenA += edgePositions[idx].length;
+    let lenB = 0;
+    for (const idx of chains[b]) lenB += edgePositions[idx].length;
+    return lenB - lenA;
+  });
+
+  const passes = [];
+  for (const cIdx of order) {
+    let bestPass = -1;
+    let minConflicts = Infinity;
+
+    for (let p = 0; p < passes.length; p++) {
+      let conflicts = 0;
+      for (const other of passes[p]) {
+        if (chainsConflict(cIdx, other, chainBoxes, cornerVertsPerChain)) {
+          conflicts++;
+          if (conflicts >= minConflicts) break;
+        }
+      }
+      if (conflicts === 0) {
+        bestPass = p;
+        break;
+      }
+      if (conflicts < minConflicts) {
+        minConflicts = conflicts;
+        bestPass = p;
+      }
+    }
+
+    if (minConflicts > 0 && passes.length < MAX_CSG_PASSES) {
+      passes.push([cIdx]);
+    } else if (bestPass >= 0) {
+      passes[bestPass].push(cIdx);
+    } else {
+      passes.push([cIdx]);
+    }
+  }
+
+  return passes.map((chainList) => {
+    const edgeIndices = [];
+    for (const cIdx of chainList) edgeIndices.push(...chains[cIdx]);
+    return edgeIndices;
+  });
+}
+
+/**
+ * Remove degenerate/obtuse-collinear CSG spike triangles and clamp vertices within `boundsBox`.
  *
  * @param {THREE.BufferGeometry} geometry
- * @param {import('./edgeDetector.js').EdgeData} edgeData
- * @param {ChamferParams} params
+ * @param {THREE.Box3} boundsBox
  * @returns {THREE.BufferGeometry}
  */
-export function applyChamfer(geometry, edgeData, params) {
-  const edges = edgeData?.getSelectedEdges ? edgeData.getSelectedEdges() : edgeData?.sharpEdges;
-  if (!edges || edges.length === 0) {
+function cleanCsgGeometry(geometry, boundsBox) {
+  const geo = geometry.index ? geometry.toNonIndexed() : geometry;
+  const posAttr = geo.getAttribute('position');
+  if (!posAttr) {
+    if (geo !== geometry) geo.dispose();
     return geometry.clone();
   }
+
+  const count = posAttr.count;
+  const cleaned = [];
+  const minX = boundsBox.min.x, minY = boundsBox.min.y, minZ = boundsBox.min.z;
+  const maxX = boundsBox.max.x, maxY = boundsBox.max.y, maxZ = boundsBox.max.z;
+  const clamp = (v, min, max) => (v < min ? min : (v > max ? max : v));
+
+  for (let i = 0; i + 2 < count; i += 3) {
+    const ax = posAttr.getX(i), ay = posAttr.getY(i), az = posAttr.getZ(i);
+    const bx = posAttr.getX(i + 1), by = posAttr.getY(i + 1), bz = posAttr.getZ(i + 1);
+    const cx = posAttr.getX(i + 2), cy = posAttr.getY(i + 2), cz = posAttr.getZ(i + 2);
+
+    const abx = bx - ax, aby = by - ay, abz = bz - az;
+    const acx = cx - ax, acy = cy - ay, acz = cz - az;
+    const bcx = cx - bx, bcy = cy - by, bcz = cz - bz;
+
+    const nx = aby * acz - abz * acy;
+    const ny = abz * acx - abx * acz;
+    const nz = abx * acy - aby * acx;
+    const crossSq = nx * nx + ny * ny + nz * nz;
+    if (crossSq < 1e-16) continue;
+
+    let l0 = abx * abx + aby * aby + abz * abz;
+    let l1 = acx * acx + acy * acy + acz * acz;
+    let l2 = bcx * bcx + bcy * bcy + bcz * bcz;
+    if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
+    if (l1 > l2) { const t = l1; l1 = l2; l2 = t; }
+    if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
+    if (l0 > 1e-8 && l0 + l1 < l2 && crossSq <= l0 * l1 * 1e-7) continue;
+
+    cleaned.push(
+      clamp(ax, minX, maxX), clamp(ay, minY, maxY), clamp(az, minZ, maxZ),
+      clamp(bx, minX, maxX), clamp(by, minY, maxY), clamp(bz, minZ, maxZ),
+      clamp(cx, minX, maxX), clamp(cy, minY, maxY), clamp(cz, minZ, maxZ)
+    );
+  }
+
+  if (geo !== geometry) geo.dispose();
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(cleaned, 3));
+  return out;
+}
+
+function applyEdgeGroup(curBrush, evaluator, groupEdges, edgeData, params, operation, apexSign) {
+  if (groupEdges.length === 0) return curBrush;
 
   const { width, segments, profile = 'chamfer' } = params;
-  const { edgeMap, vertexMap } = buildVertexChamferFrames(edges, edgeData);
-  const passes = partitionSmoothChains(edges, edgeMap, vertexMap);
-  if (passes.length === 0) {
-    return geometry.clone();
+  const { baseFrames, endpointFrames, smoothPartners } = buildVertexChamferFrames(groupEdges, edgeData);
+  const { chains, cornerVertsPerChain } = groupSmoothChains(groupEdges, baseFrames, smoothPartners);
+  if (chains.length === 0) return curBrush;
+
+  const edgePositions = new Array(groupEdges.length).fill(null);
+  for (let idx = 0; idx < groupEdges.length; idx++) {
+    const frame = baseFrames[idx];
+    const ep1 = endpointFrames.get(`${idx}:1`);
+    const ep2 = endpointFrames.get(`${idx}:2`);
+    if (!frame || !ep1 || !ep2) continue;
+
+    const pos = [];
+    buildEdgeCuttingPrism(
+      groupEdges[idx],
+      frame,
+      ep1,
+      ep2,
+      width,
+      segments,
+      profile,
+      apexSign,
+      pos
+    );
+    edgePositions[idx] = pos;
   }
 
-  const baseGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  baseGeo.computeVertexNormals();
+  const chainBoxes = chains.map((chain) => {
+    const box = new THREE.Box3();
+    for (const idx of chain) {
+      const pos = edgePositions[idx];
+      if (!pos) continue;
+      for (let i = 0; i < pos.length; i += 3) {
+        box.expandByPoint(new THREE.Vector3(pos[i], pos[i + 1], pos[i + 2]));
+      }
+    }
+    if (!box.isEmpty()) {
+      box.expandByScalar(width * 0.05);
+    }
+    return box;
+  });
 
-  let curBrush = new Brush(baseGeo);
-  curBrush.updateMatrixWorld();
+  const passes = scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, edgePositions);
 
-  const evaluator = new Evaluator();
-  evaluator.attributes = ['position', 'normal'];
-
-  try {
-    for (let passIdx = 0; passIdx < passes.length; passIdx++) {
+  for (const passIndices of passes) {
+    for (let offset = 0; offset < passIndices.length; offset += CSG_BATCH_SIZE) {
+      const batch = passIndices.slice(offset, offset + CSG_BATCH_SIZE);
       const cutterPositions = [];
-
-      for (const edge of passes[passIdx]) {
-        const frame = edgeMap.get(edge);
-        if (!frame) continue;
-
-        const { vi1, vi2, v1, v2 } = edge;
-        const vd1 = vertexMap.get(vi1);
-        const vd2 = vertexMap.get(vi2);
-        const isSmooth1 = isSmoothChainVertex(vd1, vi1);
-        const isSmooth2 = isSmoothChainVertex(vd2, vi2);
-
-        const { i1: i1_v1, i2: i2_v1, cn: cn_v1 } = resolveEndpointFrame(frame, vd1, isSmooth1);
-        const { i1: i1_v2, i2: i2_v2, cn: cn_v2 } = resolveEndpointFrame(frame, vd2, isSmooth2);
-
-        // Extend non-smooth corner endpoints cleanly past adjacent faces
-        const p1 = !isSmooth1 ? v1.clone().addScaledVector(frame.edgeDir, -width * 0.5) : v1;
-        const p2 = !isSmooth2 ? v2.clone().addScaledVector(frame.edgeDir, width * 0.5) : v2;
-
-        // Profile points along the chamfer arc at v1 and v2
-        const arc1 = [];
-        for (let s = 0; s <= segments; s++) {
-          const t = s / segments;
-          const dir = interpolateProfileDir(i1_v1, i2_v1, t, profile, segments);
-          arc1.push(p1.clone().addScaledVector(dir, width));
-        }
-        const arc2 = [];
-        for (let s = 0; s <= segments; s++) {
-          const t = s / segments;
-          const dir = interpolateProfileDir(i1_v2, i2_v2, t, profile, segments);
-          arc2.push(p2.clone().addScaledVector(dir, width));
-        }
-
-        // Extend outer arc skirt boundaries outward into exterior air to avoid coplanar grazing
-        const ext0_1 = new THREE.Vector3().subVectors(arc1[0], arc1[1]);
-        if (ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), width * 0.35);
-        const extN_1 = new THREE.Vector3().subVectors(arc1[segments], arc1[segments - 1]);
-        if (extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), width * 0.35);
-
-        const ext0_2 = new THREE.Vector3().subVectors(arc2[0], arc2[1]);
-        if (ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), width * 0.35);
-        const extN_2 = new THREE.Vector3().subVectors(arc2[segments], arc2[segments - 1]);
-        if (extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), width * 0.35);
-
-        const apex1 = p1.clone().addScaledVector(cn_v1, width * 1.2);
-        const apex2 = p2.clone().addScaledVector(cn_v2, width * 1.2);
-
-        const centroid = new THREE.Vector3()
-          .add(apex1)
-          .add(apex2)
-          .add(arc1[0])
-          .add(arc1[segments])
-          .add(arc2[0])
-          .add(arc2[segments])
-          .multiplyScalar(1 / 6);
-
-        // End caps at non-smooth endpoints
-        if (!isSmooth1) {
-          for (let s = 0; s < segments; s++) {
-            pushTriOutward(cutterPositions, apex1, arc1[s], arc1[s + 1], centroid);
-          }
-        }
-        if (!isSmooth2) {
-          for (let s = 0; s < segments; s++) {
-            pushTriOutward(cutterPositions, apex2, arc2[s + 1], arc2[s], centroid);
-          }
-        }
-
-        // Side quad 1
-        pushTriOutward(cutterPositions, apex1, apex2, arc2[0], centroid);
-        pushTriOutward(cutterPositions, apex1, arc2[0], arc1[0], centroid);
-
-        // Side quad 2
-        const last = segments;
-        pushTriOutward(cutterPositions, arc1[last], arc2[last], apex2, centroid);
-        pushTriOutward(cutterPositions, arc1[last], apex2, apex1, centroid);
-
-        // Chamfer / fillet cut faces along the arc
-        for (let s = 0; s < segments; s++) {
-          pushTriOutward(cutterPositions, arc1[s], arc1[s + 1], arc2[s + 1], centroid);
-          pushTriOutward(cutterPositions, arc1[s], arc2[s + 1], arc2[s], centroid);
+      for (const idx of batch) {
+        const pos = edgePositions[idx];
+        if (pos && pos.length > 0) {
+          for (let i = 0; i < pos.length; i++) cutterPositions.push(pos[i]);
         }
       }
 
@@ -512,14 +857,54 @@ export function applyChamfer(geometry, edgeData, params) {
       const cutterBrush = new Brush(cutterGeo);
       cutterBrush.updateMatrixWorld();
 
-      const nextBrush = evaluator.evaluate(curBrush, cutterBrush, SUBTRACTION);
+      const nextBrush = evaluator.evaluate(curBrush, cutterBrush, operation);
       cutterGeo.dispose();
       curBrush.geometry.dispose();
       curBrush = nextBrush;
       curBrush.updateMatrixWorld();
     }
+  }
 
-    const resultGeo = curBrush.geometry.clone();
+  return curBrush;
+}
+
+/**
+ * Apply chamfer/fillet to geometry using smooth-chain multi-pass CSG.
+ * Convex edges use CSG subtraction; concave edges use CSG addition with inward-buried apex.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {import('./edgeDetector.js').EdgeData} edgeData
+ * @param {ChamferParams} params
+ * @returns {THREE.BufferGeometry}
+ */
+export function applyChamfer(geometry, edgeData, params) {
+  const edges = edgeData?.getSelectedEdges ? edgeData.getSelectedEdges() : edgeData?.sharpEdges;
+  if (!edges || edges.length === 0) {
+    return geometry.clone();
+  }
+
+  const convexEdges = edges.filter((e) => e.isConvex !== false);
+  const concaveEdges = edges.filter((e) => e.isConvex === false);
+  if (convexEdges.length === 0 && concaveEdges.length === 0) {
+    return geometry.clone();
+  }
+
+  const baseGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  baseGeo.computeVertexNormals();
+  baseGeo.computeBoundingBox();
+  const origBox = baseGeo.boundingBox.clone();
+
+  let curBrush = new Brush(baseGeo);
+  curBrush.updateMatrixWorld();
+
+  const evaluator = new Evaluator();
+  evaluator.attributes = ['position', 'normal'];
+
+  try {
+    curBrush = applyEdgeGroup(curBrush, evaluator, convexEdges, edgeData, params, SUBTRACTION, 1.2);
+    curBrush = applyEdgeGroup(curBrush, evaluator, concaveEdges, edgeData, params, ADDITION, -0.8);
+
+    const resultGeo = cleanCsgGeometry(curBrush.geometry, origBox);
     curBrush.geometry.dispose();
     resultGeo.computeVertexNormals();
     resultGeo.computeBoundingBox();

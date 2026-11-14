@@ -3,6 +3,7 @@
    ============================================================ */
 import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { unzipSync, strFromU8 } from 'three/addons/libs/fflate.module.js';
 
 // 3MFLoader is a heavier addon; we import it lazily to avoid bundling if unused
 let ThreeMFLoaderClass = null;
@@ -98,6 +99,37 @@ function loadSTL(file, onLoaded, onError) {
   reader.readAsArrayBuffer(file);
 }
 
+/**
+ * Inspect 3MF archive XML headers for `<model unit="...">` and return the scale factor to millimeters.
+ * @param {ArrayBuffer} arrayBuffer
+ * @returns {number}
+ */
+export function get3MFUnitScale(arrayBuffer) {
+  const UNIT_TO_MM = {
+    micron: 0.001,
+    millimeter: 1,
+    centimeter: 10,
+    inch: 25.4,
+    foot: 304.8,
+    meter: 1000,
+  };
+  try {
+    const zip = unzipSync(new Uint8Array(arrayBuffer));
+    for (const [name, data] of Object.entries(zip)) {
+      if (name.endsWith('.model')) {
+        const head = strFromU8(data.subarray(0, Math.min(data.length, 4096)));
+        const m = head.match(/<model\b[^>]*\bunit\s*=\s*["']([^"']+)["']/i);
+        if (m && UNIT_TO_MM[m[1].toLowerCase()]) {
+          return UNIT_TO_MM[m[1].toLowerCase()];
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Could not inspect 3MF unit scale, defaulting to millimeter:', e);
+  }
+  return 1;
+}
+
 async function load3MF(file, onLoaded, onError) {
   try {
     // Lazy-load the 3MF loader and merge utility
@@ -132,22 +164,28 @@ async function load3MF(file, onLoaded, onError) {
           }
         });
 
+        let targetGeo = null;
         if (geometries.length === 1) {
-          const mesh = geometryToMesh(geometries[0]);
-          onLoaded(mesh);
+          targetGeo = geometries[0];
         } else if (geometries.length > 1) {
-          const merged =
+          targetGeo =
             window._BufferGeometryUtils?.mergeGeometries?.(geometries) ||
             mergeGeometriesList(geometries);
           for (const g of geometries) g.dispose();
-          if (!merged) {
+          if (!targetGeo) {
             throw new Error('Failed to merge multi-part 3MF geometries.');
           }
-          const mesh = geometryToMesh(merged);
-          onLoaded(mesh);
         } else {
           throw new Error('No 3D meshes found in 3MF file.');
         }
+
+        const unitScale = get3MFUnitScale(e.target.result);
+        if (unitScale !== 1) {
+          targetGeo.scale(unitScale, unitScale, unitScale);
+        }
+
+        const mesh = geometryToMesh(targetGeo);
+        onLoaded(mesh);
       } catch (err) {
         console.error('Failed to parse 3MF:', err);
         if (onError) onError(err);
