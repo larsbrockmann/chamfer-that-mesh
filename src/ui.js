@@ -700,27 +700,26 @@ export function buildUI(callbacks) {
   meshFixerBtn.addEventListener('click', () => callbacks.onRunMeshFixer && callbacks.onRunMeshFixer());
   fixerRow.appendChild(meshFixerBtn);
 
-  const previewPartsBtn = button('👁 Preview Loose', 'btn-secondary btn-small');
-  previewPartsBtn.id = 'preview-parts-btn';
-  previewPartsBtn.disabled = true;
-  previewPartsBtn.title = 'Highlight loose or unconnected parts in the 3D viewport before cleaning';
-  previewPartsBtn.addEventListener('click', () => callbacks.onToggleLoosePartsPreview && callbacks.onToggleLoosePartsPreview());
-  fixerRow.appendChild(previewPartsBtn);
+  // Combined Clean Parts & Preview Loose split button
+  const cleanGroup = el('div', 'split-btn-group');
 
-  const cleanPartsBtn = button('🧹 Clean Loose Parts', 'btn-secondary btn-small');
+  const cleanPartsBtn = button('🧹 Clean Parts', 'btn-secondary btn-small');
   cleanPartsBtn.id = 'clean-parts-btn';
   cleanPartsBtn.disabled = true;
   cleanPartsBtn.title = 'Heuristic debris cleanup: removes disconnected islands < 5% mesh area (undoable)';
   cleanPartsBtn.addEventListener('click', () => callbacks.onCleanUnconnectedParts && callbacks.onCleanUnconnectedParts());
-  fixerRow.appendChild(cleanPartsBtn);
-  chamferSection.appendChild(fixerRow);
+  cleanGroup.appendChild(cleanPartsBtn);
 
-  const repairNote = el(
-    'div',
-    'experimental-note',
-    '💡 <strong>Heuristic repair:</strong> Automated hole-filling and loose-part culling operate on raw polygon soup. Always reversible with <strong>Undo (Ctrl+Z)</strong>.'
-  );
-  chamferSection.appendChild(repairNote);
+  const previewPartsBtn = button('👁', 'btn-secondary btn-small split-btn-addon');
+  previewPartsBtn.id = 'preview-parts-btn';
+  previewPartsBtn.disabled = true;
+  previewPartsBtn.title = 'Toggle 3D preview of loose or unconnected parts';
+  previewPartsBtn.setAttribute('aria-label', 'Toggle 3D preview of loose parts');
+  previewPartsBtn.addEventListener('click', () => callbacks.onToggleLoosePartsPreview && callbacks.onToggleLoosePartsPreview());
+  cleanGroup.appendChild(previewPartsBtn);
+
+  fixerRow.appendChild(cleanGroup);
+  chamferSection.appendChild(fixerRow);
 
   sidebar.appendChild(chamferSection);
 
@@ -899,12 +898,10 @@ export function setLoosePartsPreviewActive(active) {
   if (!btn) return;
   if (active) {
     btn.classList.add('active');
-    btn.textContent = '👁 Hide Preview';
     btn.title = 'Hide loose parts 3D preview';
   } else {
     btn.classList.remove('active');
-    btn.textContent = '👁 Preview Loose';
-    btn.title = 'Highlight loose or unconnected parts in the 3D viewport before cleaning';
+    btn.title = 'Toggle 3D preview of loose or unconnected parts';
   }
 }
 
@@ -1032,8 +1029,8 @@ export function setProcessingState(
   const overlayStopBtn = document.getElementById('processing-stop-btn');
   const secondaryBtns = [
     { id: 'mesh-fixer-btn', busyLabel: 'Fixing Mesh...', defaultLabel: '🔧 Run MeshFixer' },
-    { id: 'preview-parts-btn', busyLabel: 'Previewing...', defaultLabel: '👁 Preview Loose' },
-    { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Loose Parts' },
+    { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Parts' },
+    { id: 'preview-parts-btn', busyLabel: '...', defaultLabel: '👁' },
   ];
 
   if (active) {
