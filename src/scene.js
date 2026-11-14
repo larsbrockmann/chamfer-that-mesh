@@ -21,7 +21,7 @@ export function initScene() {
   renderer.setSize(canvas.clientWidth, canvas.clientHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMappingExposure = 1.0;
 
   // Scene
   scene = new THREE.Scene();
@@ -30,7 +30,7 @@ export function initScene() {
   // Studio environment reflection dome for bevel/surface sheen
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
   scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environmentIntensity = 0.55;
+  scene.environmentIntensity = 0.42;
   pmremGenerator.dispose();
 
   // Camera
@@ -50,16 +50,20 @@ export function initScene() {
   controls.target.set(0, 0, 0);
   controls.update();
 
-  // 8-Light Multi-Directional Studio CAD Array + Hemisphere Dome
-  const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x2a3045, 0.5);
+  // 14-Light Omnidirectional CAD Inspection Array + Hemisphere Dome
+  const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x38425e, 0.38);
   scene.add(hemiLight);
 
-  // 4 World-space compass & under-fill lights covering all axes (±X, ±Y, ±Z)
+  // 8 World-space octant lights covering all 8 octants (±X, ±Y, ±Z)
   const worldLights = [
-    [0xffffff, 0.70, [8, 14, 10]],    // worldTopNE
-    [0xdbeafe, 0.50, [-12, 6, 8]],    // worldFrontNW
-    [0xfef3c7, 0.45, [10, 4, -12]],   // worldBackSE
-    [0x93c5fd, 0.40, [-6, -12, -6]],  // worldBottomUnder
+    [0xffffff, 0.52, [10, 16, 12]],    // Top-Front-Right (+X, +Y, +Z)
+    [0xdbeafe, 0.34, [-14, 10, 10]],   // Top-Front-Left (-X, +Y, +Z)
+    [0xfef3c7, 0.30, [12, 10, -14]],   // Top-Back-Right (+X, +Y, -Z)
+    [0xe0e7ff, 0.24, [-12, 12, -12]],  // Top-Back-Left (-X, +Y, -Z)
+    [0xbae6fd, 0.28, [10, -12, 10]],   // Bottom-Front-Right (+X, -Y, +Z)
+    [0xc7d2fe, 0.22, [-12, -10, 12]],  // Bottom-Front-Left (-X, -Y, +Z)
+    [0xfde68a, 0.24, [10, -12, -12]],  // Bottom-Back-Right (+X, -Y, -Z)
+    [0x93c5fd, 0.28, [-10, -14, -10]], // Bottom-Back-Left (-X, -Y, -Z)
   ];
   for (const [color, intensity, pos] of worldLights) {
     const light = new THREE.DirectionalLight(color, intensity);
@@ -67,12 +71,13 @@ export function initScene() {
     scene.add(light);
   }
 
-  // 4 Camera-attached inspection lights (scale- & pan-invariant)
+  // 5 Camera-attached inspection lights (scale- & orbit-invariant)
   const cameraLights = [
-    [0xfffbeb, 1.25, [7, 9, 6]],      // camKey (Top-Right)
-    [0x93c5fd, 0.65, [-9, 2, 5]],     // camLeftFill (Mid-Left)
-    [0xc7d2fe, 0.45, [2, -8, 6]],     // camBottomFill (Low-Front)
-    [0xfde68a, 0.55, [-3, 8, -7]],    // camRim (High-Back)
+    [0xffffff, 0.32, [0, 1, 12]],      // camHeadlamp (On-axis bore/hole illuminator)
+    [0xfffbeb, 0.88, [8, 10, 9]],      // camKey (Top-Right primary key)
+    [0x93c5fd, 0.48, [-11, 2, 7]],     // camLeftFill (Mid-Left cool contrast fill)
+    [0xc7d2fe, 0.36, [1, -10, 7]],     // camBottomFill (Low-Front underside fill)
+    [0xfde68a, 0.38, [-5, 11, 3]],     // camTopRim (High-Grazing bevel highlight)
   ];
   for (const [color, intensity, pos] of cameraLights) {
     const light = new THREE.DirectionalLight(color, intensity);
