@@ -433,8 +433,8 @@ export function previewChamfer(edgeData, params) {
     geo.computeVertexNormals();
 
     const mat = new THREE.MeshStandardMaterial({
-      color: 0xff9f43,
-      emissive: 0x441a00,
+      color: 0x2ed573,
+      emissive: 0x0a3d1e,
       roughness: 0.35,
       metalness: 0.1,
       side: THREE.DoubleSide,
@@ -456,7 +456,7 @@ export function previewChamfer(edgeData, params) {
     lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
 
     const lineMat = new THREE.LineBasicMaterial({
-      color: 0xffbe76,
+      color: 0x7bed9f,
       transparent: true,
       opacity: 0.95,
       polygonOffset: true,

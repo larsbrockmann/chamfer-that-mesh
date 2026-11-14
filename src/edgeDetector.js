@@ -112,10 +112,9 @@ export class EdgeData {
       let r, g, b;
       if (isSel && isHovered) {
         // Hovering over an already selected edge:
-        // Luminous Brilliant White-Cyan glow (NEVER turns brown/warm!)
-        // Clearly shows: "This edge is SELECTED, currently targeted (click to deselect)"
-        r = 0.92;
-        g = 1.0;
+        // Vivid electric azure-blue highlight so it stays clearly in the selected family
+        r = 0.22;
+        g = 0.62;
         b = 1.0;
       } else if (isSel) {
         // Ultra-Vibrant Neon Cyan for selected edges
