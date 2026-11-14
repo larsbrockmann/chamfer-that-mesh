@@ -54,6 +54,43 @@ export class EdgeData {
     this.updateColors();
   }
 
+  selectHorizontal() {
+    for (const e of this.sharpEdges) {
+      const dy = Math.abs(e.v2.y - e.v1.y);
+      const len = e.v1.distanceTo(e.v2) || 1e-6;
+      e.selected = (dy / len) <= 0.30;
+    }
+    this.updateColors();
+  }
+
+  selectVertical() {
+    for (const e of this.sharpEdges) {
+      const dy = Math.abs(e.v2.y - e.v1.y);
+      const len = e.v1.distanceTo(e.v2) || 1e-6;
+      e.selected = (dy / len) >= 0.93;
+    }
+    this.updateColors();
+  }
+
+  selectTopBottom() {
+    if (this.sharpEdges.length === 0) return;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const e of this.sharpEdges) {
+      minY = Math.min(minY, e.v1.y, e.v2.y);
+      maxY = Math.max(maxY, e.v1.y, e.v2.y);
+    }
+    const height = maxY - minY;
+    const band = Math.max(0.05, height * 0.06);
+    for (const e of this.sharpEdges) {
+      const midY = (e.v1.y + e.v2.y) * 0.5;
+      const isTop = midY >= maxY - band;
+      const isBottom = midY <= minY + band;
+      e.selected = isTop || isBottom;
+    }
+    this.updateColors();
+  }
+
   getSelectedEdges() {
     return this.sharpEdges.filter((e) => e.selected);
   }

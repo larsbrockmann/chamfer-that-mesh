@@ -197,27 +197,12 @@ const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
     triggerAutoDetect(60);
   },
   onDetectEdges: handleDetectEdges,
-  onSelectAll: () => {
-    if (currentEdgeData) {
-      currentEdgeData.selectAll();
-      updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
-      if (showPreview) updatePreview();
-    }
-  },
-  onSelectNone: () => {
-    if (currentEdgeData) {
-      currentEdgeData.clearSelection();
-      updateEdgeCount(currentEdgeData.sharpEdges.length, 0, currentEdgeData.filteredCount);
-      if (showPreview) updatePreview();
-    }
-  },
-  onSelectInvert: () => {
-    if (currentEdgeData) {
-      currentEdgeData.invertSelection();
-      updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
-      if (showPreview) updatePreview();
-    }
-  },
+  onSelectAll: handleSelectAll,
+  onSelectNone: handleSelectNone,
+  onSelectInvert: handleSelectInvert,
+  onSelectHorizontal: handleSelectHorizontal,
+  onSelectVertical: handleSelectVertical,
+  onSelectTopBottom: handleSelectTopBottom,
   onSelectionModeChange: (mode) => {
     loopSelectionMode = mode === 'loop';
   },
@@ -393,6 +378,52 @@ function handleAutoAngle(silent = false) {
       showToast(`✨ Auto angle threshold: ${optimalAngle}°`, 'is-selected');
     }
   }
+}
+
+// ---- Edge selection shortcuts ----
+function handleSelectAll() {
+  if (!currentEdgeData) return;
+  currentEdgeData.selectAll();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+}
+
+function handleSelectNone() {
+  if (!currentEdgeData) return;
+  currentEdgeData.clearSelection();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, 0, currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+}
+
+function handleSelectInvert() {
+  if (!currentEdgeData) return;
+  currentEdgeData.invertSelection();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+}
+
+function handleSelectHorizontal() {
+  if (!currentEdgeData) return;
+  currentEdgeData.selectHorizontal();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+  showToast(`Selected ${currentEdgeData.getSelectedCount()} horizontal edges`, 'is-selected');
+}
+
+function handleSelectVertical() {
+  if (!currentEdgeData) return;
+  currentEdgeData.selectVertical();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+  showToast(`Selected ${currentEdgeData.getSelectedCount()} vertical edges`, 'is-selected');
+}
+
+function handleSelectTopBottom() {
+  if (!currentEdgeData) return;
+  currentEdgeData.selectTopBottom();
+  updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  if (showPreview) updatePreview();
+  showToast(`Selected ${currentEdgeData.getSelectedCount()} top & bottom edges`, 'is-selected');
 }
 
 // ---- Edge detection ----
@@ -1133,6 +1164,34 @@ window.addEventListener('keydown', (e) => {
   } else if (modifier && e.key.toLowerCase() === 'y') {
     e.preventDefault();
     handleRedo();
+  } else if (modifier && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    handleSelectAll();
+    showToast('Selected all edges (Ctrl+A)', 'is-selected');
+  } else if (!modifier && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'a') {
+      e.preventDefault();
+      handleSelectAll();
+      showToast('Selected all edges (A)', 'is-selected');
+    } else if (k === 'c') {
+      e.preventDefault();
+      handleSelectNone();
+      showToast('Cleared edge selection (C)', 'is-unselected');
+    } else if (k === 'i') {
+      e.preventDefault();
+      handleSelectInvert();
+      showToast('Inverted edge selection (I)', 'is-selected');
+    } else if (k === 'h') {
+      e.preventDefault();
+      handleSelectHorizontal();
+    } else if (k === 'v') {
+      e.preventDefault();
+      handleSelectVertical();
+    } else if (k === 't') {
+      e.preventDefault();
+      handleSelectTopBottom();
+    }
   }
 });
 

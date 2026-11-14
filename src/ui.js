@@ -377,18 +377,38 @@ export function buildUI(callbacks) {
     '<span>Selected for chamfer</span><span class="info-value" id="selected-edge-count" style="color:var(--accent); font-weight:700;">0 / 0</span>';
   edgeSection.appendChild(selCountRow);
 
-  // Selection buttons row
+  // Selection buttons row 1: All / Clear / Invert
   const btnRow = el('div', 'selection-btn-row');
   const selectAllBtn = button('Select All', 'btn-secondary btn-small');
+  selectAllBtn.title = 'Select all detected edges (Shortcut: A or Ctrl+A)';
   selectAllBtn.addEventListener('click', () => callbacks.onSelectAll && callbacks.onSelectAll());
   const selectNoneBtn = button('Clear', 'btn-secondary btn-small');
+  selectNoneBtn.title = 'Deselect all edges (Shortcut: C)';
   selectNoneBtn.addEventListener('click', () => callbacks.onSelectNone && callbacks.onSelectNone());
   const invertBtn = button('Invert', 'btn-secondary btn-small');
+  invertBtn.title = 'Invert selection state (Shortcut: I)';
   invertBtn.addEventListener('click', () => callbacks.onSelectInvert && callbacks.onSelectInvert());
   btnRow.appendChild(selectAllBtn);
   btnRow.appendChild(selectNoneBtn);
   btnRow.appendChild(invertBtn);
   edgeSection.appendChild(btnRow);
+
+  // Selection shortcuts row 2: Horizontal / Vertical / Top & Bottom
+  const shortcutRow = el('div', 'selection-btn-row');
+  shortcutRow.style.marginTop = '4px';
+  const horizontalBtn = button('Horizontal', 'btn-secondary btn-small');
+  horizontalBtn.title = 'Select only horizontal edges parallel to ground (Shortcut: H)';
+  horizontalBtn.addEventListener('click', () => callbacks.onSelectHorizontal && callbacks.onSelectHorizontal());
+  const verticalBtn = button('Vertical', 'btn-secondary btn-small');
+  verticalBtn.title = 'Select only vertical edges perpendicular to ground (Shortcut: V)';
+  verticalBtn.addEventListener('click', () => callbacks.onSelectVertical && callbacks.onSelectVertical());
+  const topBottomBtn = button('Top / Bottom', 'btn-secondary btn-small');
+  topBottomBtn.title = 'Select only topmost and bottommost edges (Shortcut: T)';
+  topBottomBtn.addEventListener('click', () => callbacks.onSelectTopBottom && callbacks.onSelectTopBottom());
+  shortcutRow.appendChild(horizontalBtn);
+  shortcutRow.appendChild(verticalBtn);
+  shortcutRow.appendChild(topBottomBtn);
+  edgeSection.appendChild(shortcutRow);
 
   // Selection mode: Loop vs Single
   const modeRow = el('div', 'control-row');
@@ -421,7 +441,7 @@ export function buildUI(callbacks) {
   const helpHint = el(
     'div',
     'selection-hint',
-    '💡 Click edges in 3D viewport to toggle. In Loop mode, clicking selects the full contour.'
+    '💡 Click edges in 3D viewport to toggle. Shortcuts: A (All), C (Clear), I (Invert), H (Horizontal), V (Vertical), T (Top/Bottom).'
   );
   edgeSection.appendChild(helpHint);
 

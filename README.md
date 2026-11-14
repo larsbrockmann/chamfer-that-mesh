@@ -45,6 +45,12 @@ Detailed guides and screenshots for all features are available in the [**Wiki**]
 | `Ctrl+Z` / `Cmd+Z` | Undo |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 | `Esc` | Stop a running operation |
+| `A` / `Ctrl+A` | Select all detected edges |
+| `C` | Clear edge selection |
+| `I` | Invert edge selection |
+| `H` | Select horizontal edges |
+| `V` | Select vertical edges |
+| `T` | Select top & bottom edges |
 | Left-drag / Right-drag / Scroll | Orbit / Pan / Zoom |
 
 ## Development

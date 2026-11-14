@@ -45,16 +45,22 @@ If you are unsure what threshold to use or get lost adjusting the slider:
 
 ---
 
-## 3. Interactive Selection Modes
+## 3. Selection Shortcuts & Interactive Modes
 
 ![360 Rotation and Selection](images/360-rotation-and-selection.png)
 
-You can select edges using either batch buttons or direct 3D viewport picking:
+You can select edges using quick toolbar shortcut buttons, keyboard hotkeys, or direct 3D viewport picking:
 
-### Batch Actions
-- **Select All:** Marks all detected feature edges for chamfering.
-- **Clear:** Deselects all edges.
-- **Invert:** Flips the selection state across all detected feature edges.
+### One-Click Selection Buttons & Hotkeys
+
+| Action | Hotkey | Description |
+|---|---|---|
+| **Select All** | `A` or `Ctrl+A` | Marks all detected feature edges for chamfering. |
+| **Clear** | `C` | Clears edge selection completely. |
+| **Invert** | `I` | Flips the selection state across all detected feature edges. |
+| **Horizontal** | `H` | Selects only edges parallel to the ground plane (e.g. flat face loops, concentric step tiers, gear top/bottom rims). |
+| **Vertical** | `V` | Selects only edges perpendicular to the ground plane (e.g. upright wall corners, gear tooth vertical flanks). |
+| **Top / Bottom** | `T` | Selects only the topmost and bottommost boundary loops of the model. |
 
 ### Viewport Picking (Click Mode)
 - **Chain Loop Mode (Default):** Clicking any edge segment in the 3D viewport initiates an adjacency graph search along tangent-continuous neighbors. It automatically selects or deselects the entire continuous loop or perimeter contour.

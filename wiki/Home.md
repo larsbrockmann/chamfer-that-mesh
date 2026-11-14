@@ -38,6 +38,12 @@ Welcome to the **Chamfer That Mesh** documentation wiki. This guide covers every
 | `Ctrl+Z` / `Cmd+Z` | Undo last bevel, repair, or 90° model rotation (up to 20 levels) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo previously undone action |
 | `Esc` | Stop and abort an in-progress CSG chamfer operation |
+| `A` / `Ctrl+A` | Select all detected edges |
+| `C` | Clear / deselect all edges |
+| `I` | Invert edge selection state |
+| `H` | Select only horizontal edges (parallel to ground) |
+| `V` | Select only vertical edges (perpendicular to ground) |
+| `T` | Select topmost and bottommost perimeter edges |
 | `Left-Click Drag` | Unrestricted 360° trackball camera orbit (pivots around clicked mesh point) |
 | `Right-Click Drag` | Pan camera across view plane |
 | `Scroll Wheel` | Zoom in and out toward cursor |
