@@ -608,9 +608,9 @@ export function buildUI(callbacks) {
   });
 
   const previewToggleRow = toggleRow('Preview', false);
-  previewToggleRow
-    .querySelector('input')
-    .addEventListener('change', (e) => callbacks.onPreviewToggle(e.target.checked));
+  const previewInput = previewToggleRow.querySelector('input');
+  previewInput.id = 'preview-checkbox';
+  previewInput.addEventListener('change', (e) => callbacks.onPreviewToggle(e.target.checked));
   chamferSection.appendChild(previewToggleRow);
 
   const applyBtn = button('Apply Chamfer', 'btn-success');
@@ -746,11 +746,11 @@ export function buildUI(callbacks) {
   viewSection.appendChild(axesToggle);
 
   const edgeHighlightToggle = toggleRow('Edge Highlight', true);
-  edgeHighlightToggle
-    .querySelector('input')
-    .addEventListener('change', (e) =>
-      callbacks.onEdgeHighlightToggle(e.target.checked)
-    );
+  const edgeHighlightInput = edgeHighlightToggle.querySelector('input');
+  edgeHighlightInput.id = 'edge-highlight-checkbox';
+  edgeHighlightInput.addEventListener('change', (e) =>
+    callbacks.onEdgeHighlightToggle(e.target.checked)
+  );
   viewSection.appendChild(edgeHighlightToggle);
 
   // Recenter & Rotation Tools
@@ -830,6 +830,24 @@ export function setAngleThresholdUI(angle) {
   const val = Math.round(angle);
   if (sliderEl) sliderEl.value = val;
   if (valEl) valEl.textContent = `${val}°`;
+}
+
+/**
+ * Update the Preview toggle switch state in the UI.
+ * @param {boolean} enabled
+ */
+export function setPreviewToggleUI(enabled) {
+  const input = document.getElementById('preview-checkbox');
+  if (input) input.checked = !!enabled;
+}
+
+/**
+ * Update the Edge Highlight toggle switch state in the UI.
+ * @param {boolean} enabled
+ */
+export function setEdgeHighlightToggleUI(enabled) {
+  const input = document.getElementById('edge-highlight-checkbox');
+  if (input) input.checked = !!enabled;
 }
 
 /**

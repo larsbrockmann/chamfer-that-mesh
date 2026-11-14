@@ -19,7 +19,16 @@ import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
 import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
 import { analyzeMesh, fixMesh, removeDisconnectedParts, findLooseParts } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
-import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState, setLoosePartsPreviewActive } from './ui.js';
+import {
+  buildUI,
+  updateEdgeCount,
+  updateMeshHealth,
+  setUndoRedoState,
+  setProcessingState,
+  setLoosePartsPreviewActive,
+  setPreviewToggleUI,
+  setEdgeHighlightToggleUI,
+} from './ui.js';
 
 // ---- App state ----
 let currentMesh = null;
@@ -99,6 +108,7 @@ function handleUndo() {
   currentIsInitial = prevEntry.isInitial;
 
   syncUndoRedoUI();
+  ensureEdgeHighlightVisible();
   handleDetectEdges();
   showToast('↩ Undone modification (Ctrl+Z)', 'is-selected');
 }
@@ -121,6 +131,7 @@ function handleRedo() {
   currentIsInitial = nextEntry.isInitial;
 
   syncUndoRedoUI();
+  ensureEdgeHighlightVisible();
   handleDetectEdges();
   showToast('↪ Redone modification (Ctrl+Y)', 'is-selected');
 }
@@ -227,6 +238,7 @@ const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
   onPreviewToggle: (v) => {
     showPreview = v;
     if (v) {
+      ensureEdgeHighlightVisible();
       updatePreview();
     } else {
       removePreview();
@@ -332,6 +344,10 @@ function onModelLoaded(mesh) {
   currentMesh = mesh;
   initialGeometry = mesh.geometry.clone();
   currentIsInitial = true;
+  showEdgeHighlight = true;
+  setEdgeHighlightToggleUI(true);
+  showPreview = false;
+  setPreviewToggleUI(false);
   syncUndoRedoUI();
   scene.add(currentMesh);
 
@@ -387,9 +403,18 @@ function handleAutoAngle(silent = false) {
   }
 }
 
+function ensureEdgeHighlightVisible() {
+  if (!showEdgeHighlight) {
+    showEdgeHighlight = true;
+    setEdgeHighlightToggleUI(true);
+    if (edgeLinesObject) edgeLinesObject.visible = true;
+  }
+}
+
 // ---- Edge selection shortcuts ----
 function handleSelectAll() {
   if (!currentEdgeData) return;
+  ensureEdgeHighlightVisible();
   currentEdgeData.selectAll();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   if (showPreview) updatePreview();
@@ -404,6 +429,7 @@ function handleSelectNone() {
 
 function handleSelectInvert() {
   if (!currentEdgeData) return;
+  ensureEdgeHighlightVisible();
   currentEdgeData.invertSelection();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   if (showPreview) updatePreview();
@@ -411,6 +437,7 @@ function handleSelectInvert() {
 
 function handleSelectHorizontal() {
   if (!currentEdgeData) return;
+  ensureEdgeHighlightVisible();
   currentEdgeData.selectHorizontal();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   if (showPreview) updatePreview();
@@ -419,6 +446,7 @@ function handleSelectHorizontal() {
 
 function handleSelectVertical() {
   if (!currentEdgeData) return;
+  ensureEdgeHighlightVisible();
   currentEdgeData.selectVertical();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   if (showPreview) updatePreview();
@@ -427,6 +455,7 @@ function handleSelectVertical() {
 
 function handleSelectTopBottom() {
   if (!currentEdgeData) return;
+  ensureEdgeHighlightVisible();
   currentEdgeData.selectTopBottom();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   if (showPreview) updatePreview();
@@ -434,7 +463,7 @@ function handleSelectTopBottom() {
 }
 
 // ---- Edge detection ----
-function handleDetectEdges() {
+function handleDetectEdges(options = {}) {
   if (!currentMesh) return;
 
   removeEdgeLines();
@@ -453,6 +482,10 @@ function handleDetectEdges() {
     convexOnly,
   });
 
+  if (options.deselectAll && currentEdgeData) {
+    currentEdgeData.clearSelection();
+  }
+
   updateEdgeCount(
     currentEdgeData.sharpEdges.length,
     currentEdgeData.getSelectedCount(),
@@ -461,7 +494,7 @@ function handleDetectEdges() {
 
   if (currentEdgeData.lineSegments) {
     edgeLinesObject = currentEdgeData.lineSegments;
-    edgeLinesObject.visible = showEdgeHighlight;
+    edgeLinesObject.visible = showEdgeHighlight && !options.hideHighlights;
     scene.add(edgeLinesObject);
   }
 
@@ -665,6 +698,11 @@ canvas.addEventListener(
 canvas.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   if (!currentEdgeData || controls.state !== -1) return;
+  if (!showEdgeHighlight) {
+    if (hoverBadge) hoverBadge.classList.remove('visible');
+    canvas.style.cursor = 'default';
+    return;
+  }
   const idx = getClosestEdge(e.clientX, e.clientY, false);
   currentEdgeData.setHovered(idx, loopSelectionMode);
   updateHoverBadge(idx);
@@ -681,7 +719,7 @@ canvas.addEventListener('pointerup', (e) => {
   if (isTouch && !e.isPrimary) return;
   const tapThreshold = isTouch ? 14 : 6;
   const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-  if (dist < tapThreshold && currentEdgeData) {
+  if (dist < tapThreshold && currentEdgeData && showEdgeHighlight) {
     const idx = getClosestEdge(e.clientX, e.clientY, isTouch);
     if (idx >= 0) {
       currentEdgeData.toggleEdge(idx, loopSelectionMode);
@@ -839,7 +877,8 @@ function formatMeshFixSummary(fixRes) {
   return parts.join(', ');
 }
 
-function finalizeReplacedGeometry(nextGeometry) {
+function finalizeReplacedGeometry(nextGeometry, options = {}) {
+  const { isChamferApply = false } = options;
   currentIsInitial = false;
   syncUndoRedoUI();
 
@@ -855,7 +894,21 @@ function finalizeReplacedGeometry(nextGeometry) {
   currentEdgeData = null;
 
   setProcessingState(false);
-  handleDetectEdges();
+
+  if (isChamferApply) {
+    // Disable preview so the user isn't immediately shown the next bevel preview
+    showPreview = false;
+    setPreviewToggleUI(false);
+
+    // Disable edge highlight overlay so user sees their clean finished part
+    showEdgeHighlight = false;
+    setEdgeHighlightToggleUI(false);
+
+    // Detect edges on the new geometry, but deselect all and hide highlights for a clean inspection view
+    handleDetectEdges({ deselectAll: true, hideHighlights: true });
+  } else {
+    handleDetectEdges();
+  }
 }
 
 let isProcessingMesh = false;
@@ -1021,7 +1074,7 @@ async function handleApplyChamfer() {
       return;
     }
 
-    finalizeReplacedGeometry(newGeometry);
+    finalizeReplacedGeometry(newGeometry, { isChamferApply: true });
     newGeometry = null;
     if (manualFixHint) {
       showToast(
@@ -1034,7 +1087,7 @@ async function handleApplyChamfer() {
         'is-unselected'
       );
     } else {
-      showToast(`${label} applied${fixedNotice}! (Ctrl+Z to undo)`, 'is-selected');
+      showToast(`${label} applied${fixedNotice}! Clean view active (press 'A' or toggle Highlight to edit further)`, 'is-selected');
     }
   } finally {
     activeAbortController = null;
