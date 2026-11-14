@@ -66,7 +66,7 @@ export function buildUI(callbacks) {
   const disclaimer = el(
     'div',
     'sidebar-disclaimer',
-    '⚠ Heuristic mesh post-processing: operates on raw STL/3MF triangles. Outcomes may come out imprecise or broken on complex geometry.'
+    '⚠ Mesh post-processing: operates on raw STL/3MF triangles. Outcomes may come out imprecise or broken on complex geometry.'
   );
   disclaimer.id = 'sidebar-disclaimer';
   sidebar.appendChild(headerRow);
