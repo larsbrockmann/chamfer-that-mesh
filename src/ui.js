@@ -296,7 +296,7 @@ export function buildUI(callbacks) {
   edgeSection.appendChild(angleSlider);
 
   // Convex Edges Only toggle
-  const convexRow = toggleRow('Convex Edges Only', false);
+  const convexRow = toggleRow('Convex Edges Only', true);
   const convexInput = convexRow.querySelector('input');
   convexInput.addEventListener('change', () => {
     if (callbacks.onConvexOnlyToggle) callbacks.onConvexOnlyToggle(convexInput.checked);

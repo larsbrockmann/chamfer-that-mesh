@@ -138,7 +138,7 @@ function handleResetModel() {
 }
 
 let angleThreshold = 30;
-let convexOnly = false;
+let convexOnly = true;
 let filterTinyEdges = false;
 let filterMode = 'ignore'; // 'combine' | 'ignore' | 'both'
 let minEdgeLength = 0.20;
