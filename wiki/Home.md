@@ -7,7 +7,7 @@ Welcome to the **Chamfer That Mesh** documentation wiki. This guide covers every
 ## Wiki Chapters
 
 1. **[UI Tour & Navigation](UI-Tour-and-Navigation.md)**  
-   Learn the studio layout, 360° trackball camera navigation, desktop resizable sidebar, mobile bottom-sheet drawer, and viewport display helpers (wireframe, grid, axes).
+   Learn the studio layout, CAD turntable orbit camera navigation, desktop resizable sidebar, mobile bottom-sheet drawer, and viewport display helpers (wireframe, grid, axes).
 
 2. **[Edge Detection & Selection](Edge-Detection-and-Selection.md)**  
    Master sharp edge detection by dihedral angle threshold, convex-only filtering, tiny/collinear edge merging, chain loop selection, and interactive 3D viewport picking.
@@ -44,7 +44,7 @@ Welcome to the **Chamfer That Mesh** documentation wiki. This guide covers every
 | `H` | Select only horizontal edges (parallel to ground) |
 | `V` | Select only vertical edges (perpendicular to ground) |
 | `T` | Select topmost and bottommost perimeter edges |
-| `Left-Click Drag` | Unrestricted 360° trackball camera orbit (pivots around clicked mesh point) |
+| `Left-Click Drag` | Smooth turntable orbit around model (pivots around clicked mesh point with damping) |
 | `Right-Click Drag` | Pan camera across view plane |
 | `Scroll Wheel` | Zoom in and out toward cursor |
 | `ArrowLeft` / `ArrowRight` | Adjust desktop settings panel width in 16px increments (when resizer is focused) |
@@ -54,7 +54,7 @@ Welcome to the **Chamfer That Mesh** documentation wiki. This guide covers every
 
 ## Technology Stack
 
-- **[Three.js (r170+)](https://threejs.org/):** WebGL rendering engine, TrackballControls, LineSegments2 screen-space antialiased edges, STLLoader, ThreeMFLoader, and RoomEnvironment PBR studio lighting.
+- **[Three.js (r170+)](https://threejs.org/):** WebGL rendering engine, OrbitControls with smooth damping and cursor zoom, LineSegments2 screen-space antialiased edges, STLLoader, ThreeMFLoader, and RoomEnvironment PBR studio lighting.
 - **[three-bvh-csg](https://github.com/gkjohnson/three-bvh-csg):** Bounding Volume Hierarchy accelerated Constructive Solid Geometry booleans for fast triangle mesh subtraction.
 - **[fflate](https://github.com/101arrowz/fflate):** High-performance client-side ZIP compression for unpacking and generating compliant 3MF packages.
 - **[Vite 6](https://vitejs.dev/):** Fast ESM development server and static production packager. Everything runs 100% client-side in the browser with no server uploads.

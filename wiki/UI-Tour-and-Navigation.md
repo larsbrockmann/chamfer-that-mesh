@@ -15,18 +15,18 @@ The application workspace consists of two primary regions:
 
 ---
 
-## 2. 360° Trackball Camera Navigation
+## 2. CAD Turntable Orbit Navigation
 
-Navigation uses continuous trackball controls with no polar angle limits or gimbal lock, allowing full 360° spherical rotation from any perspective:
+Navigation uses intuitive CAD turntable orbit controls with inertial damping and mouse-pivot tracking, keeping upright orientation stable:
 
-![360 Degree Rotation and Orbit Navigation](images/360-rotation-and-selection.png)
+![3D Viewport and Orbit Navigation](images/360-rotation-and-selection.png)
 
 | Mouse / Gesture | Camera Action | Details |
 |---|---|---|
-| **Left-Click + Drag** | **Continuous 360° Orbit** | Freely rotates the model in any direction without stopping at the top or bottom poles. |
+| **Left-Click + Drag** | **Turntable Orbit** | Smoothly rotates around the CAD up-axis with cinematic damping without tumbling upside-down. |
 | **Right-Click + Drag** | **Pan Viewplane** | Shifts the camera horizontally and vertically across the active screen plane. |
-| **Scroll Wheel / Pinch** | **Zoom In / Out** | Smooth exponential camera zoom toward the mouse cursor or touch center. |
-| **Left Click on Mesh** | **Set Rotation Center** | Automatically repositions the camera's orbit pivot point directly onto the clicked surface vertex. |
+| **Scroll Wheel / Pinch** | **Zoom To Cursor** | Smooth exponential camera zoom directed precisely toward the mouse cursor or touch center. |
+| **Left Click on Mesh** | **Set Rotation Center** | Automatically pivots subsequent camera rotation directly around the clicked surface vertex. |
 
 > [!TIP]
 > If the model ever rotates off-screen or out of sight, click **Center & Reset View** in the sidebar to re-center the bounding box and frame the geometry perfectly.

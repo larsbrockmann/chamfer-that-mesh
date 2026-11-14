@@ -2,7 +2,7 @@
    scene.js — Three.js scene, camera, renderer, controls, lights
    ============================================================ */
 import * as THREE from 'three';
-import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export let scene, camera, renderer, controls;
@@ -46,19 +46,40 @@ export function initScene() {
   camera.position.set(5, 4, 6);
   scene.add(camera);
 
-  // Controls — TrackballControls provides unrestricted 360-degree rotation without polar lock
-  controls = new TrackballControls(camera, renderer.domElement);
-  controls.rotateSpeed = 2.4;
-  controls.zoomSpeed = 1.2;
-  controls.panSpeed = 0.8;
-  controls.staticMoving = false;
-  controls.dynamicDampingFactor = 0.15;
+  // Controls
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.zoomToCursor = true;
   controls.minDistance = 0.05;
-  controls.maxDistance = 10000;
-  controls.keys = []; // Disable A/S/D key overrides so inputs/shortcuts work freely
   controls.target.set(0, 0, 0);
-  controls.handleResize();
   controls.update();
+
+  // Wrap controls.update so rotation (including damping) pivots around orbitPivot
+  // without moving the camera on pointerdown or breaking OrbitControls's spherical state.
+  const baseUpdate = controls.update.bind(controls);
+  const prevQuat = new THREE.Quaternion();
+  const prevTarget = new THREE.Vector3();
+  const deltaQuat = new THREE.Quaternion();
+  const targetOffset = new THREE.Vector3();
+  const deltaTarget = new THREE.Vector3();
+
+  controls.update = function (deltaTime) {
+    prevQuat.copy(camera.quaternion);
+    prevTarget.copy(controls.target);
+
+    const result = baseUpdate(deltaTime);
+
+    if (1 - Math.abs(prevQuat.dot(camera.quaternion)) > 1e-12) {
+      deltaQuat.copy(camera.quaternion).multiply(prevQuat.invert());
+      targetOffset.subVectors(prevTarget, orbitPivot).applyQuaternion(deltaQuat);
+      deltaTarget.addVectors(orbitPivot, targetOffset).sub(prevTarget);
+      controls.target.add(deltaTarget);
+      camera.position.add(deltaTarget);
+    }
+
+    return result;
+  };
 
   // 14-Light Omnidirectional CAD Inspection Array + Hemisphere Dome
   const hemiLight = new THREE.HemisphereLight(0xeef6ff, 0x38425e, 0.38);
@@ -115,9 +136,6 @@ export function initScene() {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    if (controls && controls.handleResize) {
-      controls.handleResize();
-    }
   });
   resizeObserver.observe(canvas);
 
@@ -158,10 +176,12 @@ export function syncTargetDepthToPoint(point, useRadialDistance = false) {
 }
 
 /**
- * Set the active orbit pivot point and sync controls target.
+ * Set the active orbit pivot point and optionally sync controls.target depth.
  */
 export function setOrbitPivot(point, syncTargetDepth = true, useRadialDistance = false) {
-  if (!point || !controls) return;
+  if (!point) return;
   orbitPivot.copy(point);
-  controls.target.copy(point);
+  if (syncTargetDepth) {
+    syncTargetDepthToPoint(point, useRadialDistance);
+  }
 }

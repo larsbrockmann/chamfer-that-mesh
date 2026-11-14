@@ -27,7 +27,7 @@ A small browser tool for adding chamfers and fillets to the edges of STL and 3MF
 
 Detailed guides and screenshots for all features are available in the [**Wiki**](wiki/Home.md):
 
-- [**UI Tour & Navigation**](wiki/UI-Tour-and-Navigation.md) — 360° trackball camera, desktop resizable sidebar, and mobile drawer.
+- [**UI Tour & Navigation**](wiki/UI-Tour-and-Navigation.md) — CAD orbit camera, desktop resizable sidebar, and mobile drawer.
 - [**Edge Detection & Selection**](wiki/Edge-Detection-and-Selection.md) — Angle thresholds, loop chaining, and 3D viewport picking.
 - [**Bevel Profiles & Engine**](wiki/Bevel-Profiles-and-Engine.md) — Chamfer, Fillet, and Hybrid bevels with live 3D preview.
 - [**Mesh Repair & Diagnostics**](wiki/Mesh-Repair-and-Diagnostics.md) — MeshFixer, watertight repair, and loose-part cleanup.
