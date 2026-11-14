@@ -1055,7 +1055,13 @@ export function setProcessingState(
 function el(tag, className, text) {
   const e = document.createElement(tag);
   if (className) e.className = className;
-  if (text) e.textContent = text;
+  if (text) {
+    if (typeof text === 'string' && text.includes('<') && text.includes('>')) {
+      e.innerHTML = text;
+    } else {
+      e.textContent = text;
+    }
+  }
   return e;
 }
 
