@@ -787,13 +787,13 @@ function cleanCsgGeometry(geometry, boundsBox) {
   return out;
 }
 
-function applyEdgeGroup(curBrush, evaluator, groupEdges, edgeData, params, operation, apexSign) {
-  if (groupEdges.length === 0) return curBrush;
+function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation, apexSign) {
+  if (groupEdges.length === 0) return [];
 
   const { width, segments, profile = 'chamfer' } = params;
   const { baseFrames, endpointFrames, smoothPartners } = buildVertexChamferFrames(groupEdges, edgeData);
   const { chains, cornerVertsPerChain } = groupSmoothChains(groupEdges, baseFrames, smoothPartners);
-  if (chains.length === 0) return curBrush;
+  if (chains.length === 0) return [];
 
   const edgePositions = new Array(groupEdges.length).fill(null);
   for (let idx = 0; idx < groupEdges.length; idx++) {
@@ -833,6 +833,7 @@ function applyEdgeGroup(curBrush, evaluator, groupEdges, edgeData, params, opera
   });
 
   const passes = scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, edgePositions);
+  const batches = [];
 
   for (const passIndices of passes) {
     for (let offset = 0; offset < passIndices.length; offset += CSG_BATCH_SIZE) {
@@ -844,28 +845,56 @@ function applyEdgeGroup(curBrush, evaluator, groupEdges, edgeData, params, opera
           for (let i = 0; i < pos.length; i++) cutterPositions.push(pos[i]);
         }
       }
-
-      if (cutterPositions.length === 0) continue;
-
-      const cutterGeo = new THREE.BufferGeometry();
-      cutterGeo.setAttribute(
-        'position',
-        new THREE.Float32BufferAttribute(cutterPositions, 3)
-      );
-      cutterGeo.computeVertexNormals();
-
-      const cutterBrush = new Brush(cutterGeo);
-      cutterBrush.updateMatrixWorld();
-
-      const nextBrush = evaluator.evaluate(curBrush, cutterBrush, operation);
-      cutterGeo.dispose();
-      curBrush.geometry.dispose();
-      curBrush = nextBrush;
-      curBrush.updateMatrixWorld();
+      if (cutterPositions.length > 0) {
+        batches.push({ cutterPositions, edgeCount: batch.length, operation });
+      }
     }
   }
 
-  return curBrush;
+  return batches;
+}
+
+function evaluateCsgBatch(curBrush, evaluator, batch) {
+  const cutterGeo = new THREE.BufferGeometry();
+  cutterGeo.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(batch.cutterPositions, 3)
+  );
+  cutterGeo.computeVertexNormals();
+
+  const cutterBrush = new Brush(cutterGeo);
+  cutterBrush.updateMatrixWorld();
+
+  const nextBrush = evaluator.evaluate(curBrush, cutterBrush, batch.operation);
+  cutterGeo.dispose();
+  curBrush.geometry.dispose();
+  nextBrush.updateMatrixWorld();
+  return nextBrush;
+}
+
+function createAbortError() {
+  const err = new Error('Chamfer operation aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
+function buildAllCsgBatches(edges, edgeData, params) {
+  const convexEdges = edges.filter((e) => e.isConvex !== false);
+  const concaveEdges = edges.filter((e) => e.isConvex === false);
+  if (convexEdges.length === 0 && concaveEdges.length === 0) return [];
+  return [
+    ...prepareEdgeGroupBatches(convexEdges, edgeData, params, SUBTRACTION, 1.2),
+    ...prepareEdgeGroupBatches(concaveEdges, edgeData, params, ADDITION, -0.8),
+  ];
+}
+
+function finalizeCsgResult(curBrush, origBox) {
+  const resultGeo = cleanCsgGeometry(curBrush.geometry, origBox);
+  curBrush.geometry.dispose();
+  resultGeo.computeVertexNormals();
+  resultGeo.computeBoundingBox();
+  resultGeo.computeBoundingSphere();
+  return resultGeo;
 }
 
 /**
@@ -883,9 +912,8 @@ export function applyChamfer(geometry, edgeData, params) {
     return geometry.clone();
   }
 
-  const convexEdges = edges.filter((e) => e.isConvex !== false);
-  const concaveEdges = edges.filter((e) => e.isConvex === false);
-  if (convexEdges.length === 0 && concaveEdges.length === 0) {
+  const batches = buildAllCsgBatches(edges, edgeData, params);
+  if (batches.length === 0) {
     return geometry.clone();
   }
 
@@ -901,18 +929,68 @@ export function applyChamfer(geometry, edgeData, params) {
   evaluator.attributes = ['position', 'normal'];
 
   try {
-    curBrush = applyEdgeGroup(curBrush, evaluator, convexEdges, edgeData, params, SUBTRACTION, 1.2);
-    curBrush = applyEdgeGroup(curBrush, evaluator, concaveEdges, edgeData, params, ADDITION, -0.8);
-
-    const resultGeo = cleanCsgGeometry(curBrush.geometry, origBox);
-    curBrush.geometry.dispose();
-    resultGeo.computeVertexNormals();
-    resultGeo.computeBoundingBox();
-    resultGeo.computeBoundingSphere();
-    return resultGeo;
+    for (const batch of batches) {
+      curBrush = evaluateCsgBatch(curBrush, evaluator, batch);
+    }
+    return finalizeCsgResult(curBrush, origBox);
   } catch (err) {
     console.error('CSG chamfer failed, falling back to original geometry:', err);
     try { curBrush.geometry.dispose(); } catch (_) { /* ignore cleanup error */ }
+    return geometry.clone();
+  }
+}
+
+/**
+ * Async multi-pass CSG chamfer/fillet that yields between batches so UI events
+ * and an AbortSignal can cancel execution cleanly.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {import('./edgeDetector.js').EdgeData} edgeData
+ * @param {ChamferParams} params
+ * @param {{ signal?: AbortSignal, onProgress?: (info: { current: number, total: number, edgeCount: number }) => void }} [options]
+ * @returns {Promise<THREE.BufferGeometry>}
+ */
+export async function applyChamferAsync(geometry, edgeData, params, options = {}) {
+  const { signal, onProgress } = options;
+  if (signal?.aborted) throw createAbortError();
+
+  const edges = edgeData?.getSelectedEdges ? edgeData.getSelectedEdges() : edgeData?.sharpEdges;
+  if (!edges || edges.length === 0) {
+    return geometry.clone();
+  }
+
+  const batches = buildAllCsgBatches(edges, edgeData, params);
+  if (batches.length === 0) {
+    return geometry.clone();
+  }
+
+  const baseGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  baseGeo.computeVertexNormals();
+  baseGeo.computeBoundingBox();
+  const origBox = baseGeo.boundingBox.clone();
+
+  let curBrush = new Brush(baseGeo);
+  curBrush.updateMatrixWorld();
+
+  const evaluator = new Evaluator();
+  evaluator.attributes = ['position', 'normal'];
+
+  try {
+    for (let i = 0; i < batches.length; i++) {
+      if (signal?.aborted) throw createAbortError();
+      const batch = batches[i];
+      onProgress?.({ current: i + 1, total: batches.length, edgeCount: batch.edgeCount });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (signal?.aborted) throw createAbortError();
+      curBrush = evaluateCsgBatch(curBrush, evaluator, batch);
+    }
+
+    if (signal?.aborted) throw createAbortError();
+    return finalizeCsgResult(curBrush, origBox);
+  } catch (err) {
+    try { curBrush.geometry.dispose(); } catch (_) { /* ignore cleanup error */ }
+    if (err?.name === 'AbortError') throw err;
+    console.error('CSG chamfer failed, falling back to original geometry:', err);
     return geometry.clone();
   }
 }

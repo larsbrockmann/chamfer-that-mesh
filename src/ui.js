@@ -405,6 +405,19 @@ export function buildUI(callbacks) {
   applyBtn.addEventListener('click', () => callbacks.onApplyChamfer());
   chamferSection.appendChild(applyBtn);
 
+  const stopBtn = button('⏹ Stop Operation (Esc)', 'btn-danger');
+  stopBtn.id = 'stop-chamfer-btn';
+  stopBtn.style.marginTop = '6px';
+  stopBtn.style.display = 'none';
+  stopBtn.title = 'Abort the running chamfer operation (Esc)';
+  stopBtn.addEventListener('click', () => callbacks.onStopProcessing && callbacks.onStopProcessing());
+  chamferSection.appendChild(stopBtn);
+
+  const overlayStopBtn = document.getElementById('processing-stop-btn');
+  if (overlayStopBtn) {
+    overlayStopBtn.onclick = () => callbacks.onStopProcessing && callbacks.onStopProcessing();
+  }
+
   // Undo / Redo history buttons
   const historyRow = el('div', 'selection-btn-row');
   historyRow.style.marginTop = '6px';
@@ -726,6 +739,8 @@ export function setProcessingState(
   if (detailEl && detail !== undefined) detailEl.textContent = detail;
 
   const applyBtn = document.getElementById('apply-chamfer-btn');
+  const stopBtn = document.getElementById('stop-chamfer-btn');
+  const overlayStopBtn = document.getElementById('processing-stop-btn');
   const secondaryBtns = [
     { id: 'mesh-fixer-btn', busyLabel: 'Fixing Mesh...', defaultLabel: '🔧 Run MeshFixer' },
     { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Loose Parts' },
@@ -738,6 +753,15 @@ export function setProcessingState(
         applyBtn.classList.add('is-busy');
         applyBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span>Applying...';
       }
+    }
+    if (stopBtn) {
+      stopBtn.style.display = '';
+      stopBtn.disabled = false;
+      stopBtn.textContent = '⏹ Stop Operation (Esc)';
+    }
+    if (overlayStopBtn) {
+      overlayStopBtn.disabled = false;
+      overlayStopBtn.textContent = '⏹ Stop Operation (Esc)';
     }
     for (const item of secondaryBtns) {
       const btn = document.getElementById(item.id);
@@ -756,6 +780,15 @@ export function setProcessingState(
       applyBtn.disabled = false;
       applyBtn.classList.remove('is-busy');
       applyBtn.textContent = 'Apply Chamfer';
+    }
+    if (stopBtn) {
+      stopBtn.style.display = 'none';
+      stopBtn.disabled = false;
+      stopBtn.textContent = '⏹ Stop Operation (Esc)';
+    }
+    if (overlayStopBtn) {
+      overlayStopBtn.disabled = false;
+      overlayStopBtn.textContent = '⏹ Stop Operation (Esc)';
     }
     for (const item of secondaryBtns) {
       const btn = document.getElementById(item.id);

@@ -16,7 +16,7 @@ import {
 } from './scene.js';
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges } from './edgeDetector.js';
-import { applyChamfer, previewChamfer, ChamferParams } from './chamferEngine.js';
+import { applyChamfer, applyChamferAsync, previewChamfer, ChamferParams } from './chamferEngine.js';
 import { analyzeMesh, fixMesh, removeDisconnectedParts } from './meshFixer.js';
 import { exportSTL, export3MF } from './meshExporter.js';
 import { buildUI, updateEdgeCount, updateMeshHealth, setUndoRedoState, setProcessingState } from './ui.js';
@@ -242,6 +242,7 @@ const { updateInfo, fileInput, setWidth } = buildUI({
     }
   },
   onApplyChamfer: handleApplyChamfer,
+  onStopProcessing: handleStopProcessing,
   onUndo: handleUndo,
   onRedo: handleRedo,
   onReset: handleResetModel,
@@ -698,6 +699,21 @@ function finalizeReplacedGeometry(nextGeometry) {
 }
 
 let isProcessingMesh = false;
+let activeAbortController = null;
+
+function handleStopProcessing() {
+  if (!isProcessingMesh || !activeAbortController) return;
+  activeAbortController.abort();
+  const detailEl = document.getElementById('processing-detail');
+  if (detailEl) detailEl.textContent = 'Aborting after current CSG batch...';
+  for (const id of ['processing-stop-btn', 'stop-chamfer-btn']) {
+    const btn = document.getElementById(id);
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Stopping...';
+    }
+  }
+}
 
 /**
  * Yield to the browser so DOM updates (loading overlay & spinner) paint
@@ -723,34 +739,69 @@ async function handleApplyChamfer() {
 
   const label = chamferProfile === 'hybrid' ? 'Hybrid bevel' : (chamferProfile === 'fillet' ? 'Fillet' : 'Chamfer');
 
+  activeAbortController = new AbortController();
+  const { signal } = activeAbortController;
   isProcessingMesh = true;
   setProcessingState(
     true,
     `Applying ${label}...`,
-    `Subtracting ${selectedCount} edge cutter${selectedCount === 1 ? '' : 's'} (CSG)...`,
+    `Preparing ${selectedCount} edge cutter${selectedCount === 1 ? '' : 's'} (CSG)...`,
     'apply-chamfer-btn'
   );
 
+  let newGeometry = null;
+  const abortOperation = () => {
+    if (newGeometry) {
+      newGeometry.dispose();
+      newGeometry = null;
+    }
+    const popped = undoStack.pop();
+    popped?.geo?.dispose();
+    syncUndoRedoUI();
+    showToast('⏹ Operation aborted — mesh unchanged', 'is-unselected');
+  };
+
   try {
     await waitForNextPaint();
+    if (signal.aborted) {
+      showToast('⏹ Operation aborted — mesh unchanged', 'is-unselected');
+      return;
+    }
 
     // Save state before modifying geometry
     pushUndoState();
 
     const params = new ChamferParams(chamferWidth, chamferSegments, chamferProfile);
-    let newGeometry;
     try {
-      newGeometry = applyChamfer(
+      newGeometry = await applyChamferAsync(
         currentMesh.geometry,
         currentEdgeData,
-        params
+        params,
+        {
+          signal,
+          onProgress: ({ current, total, edgeCount }) => {
+            const detailEl = document.getElementById('processing-detail');
+            if (detailEl) {
+              detailEl.textContent = `CSG pass ${current} / ${total} (${edgeCount} edge${edgeCount === 1 ? '' : 's'})...`;
+            }
+          },
+        }
       );
     } catch (err) {
+      if (err?.name === 'AbortError' || signal.aborted) {
+        abortOperation();
+        return;
+      }
       console.error('Chamfer operation failed:', err);
       const popped = undoStack.pop();
       popped?.geo?.dispose();
       syncUndoRedoUI();
       showToast('Chamfer failed on non-manifold edge', 'is-unselected');
+      return;
+    }
+
+    if (signal.aborted) {
+      abortOperation();
       return;
     }
 
@@ -767,6 +818,10 @@ async function handleApplyChamfer() {
           'apply-chamfer-btn'
         );
         await waitForNextPaint();
+        if (signal.aborted) {
+          abortOperation();
+          return;
+        }
 
         try {
           const fixRes = fixMesh(newGeometry, { removeUnconnected: removeUnconnectedParts });
@@ -801,8 +856,13 @@ async function handleApplyChamfer() {
       'apply-chamfer-btn'
     );
     await waitForNextPaint();
+    if (signal.aborted) {
+      abortOperation();
+      return;
+    }
 
     finalizeReplacedGeometry(newGeometry);
+    newGeometry = null;
     if (manualFixHint) {
       showToast(
         `${label} applied${fixedNotice} with ${remainingIssues} issue(s) — click 🔧 Run MeshFixer to repair`,
@@ -817,6 +877,7 @@ async function handleApplyChamfer() {
       showToast(`${label} applied${fixedNotice}! (Ctrl+Z to undo)`, 'is-selected');
     }
   } finally {
+    activeAbortController = null;
     isProcessingMesh = false;
     setProcessingState(false);
   }
@@ -1014,8 +1075,14 @@ function animate() {
 
 animate();
 
-// ---- Keyboard shortcuts (Ctrl+Z: Undo, Ctrl+Y / Ctrl+Shift+Z: Redo) ----
+// ---- Keyboard shortcuts (Esc: Stop, Ctrl+Z: Undo, Ctrl+Y / Ctrl+Shift+Z: Redo) ----
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isProcessingMesh) {
+    e.preventDefault();
+    handleStopProcessing();
+    return;
+  }
+
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
     return;
   }

@@ -672,6 +672,14 @@ button:disabled {
   border-radius: 10px;
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55), 0 0 24px rgba(0, 212, 255, 0.12);
   text-align: center;
+  cursor: default;
+}
+
+.processing-stop-btn {
+  margin-top: 6px;
+  width: auto;
+  min-width: 170px;
+  cursor: pointer;
 }
 
 .processing-spinner {
