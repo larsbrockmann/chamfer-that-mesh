@@ -139,13 +139,13 @@ function handleResetModel() {
 
 let angleThreshold = 30;
 let convexOnly = false;
-let filterTinyEdges = true;
-let filterMode = 'combine'; // 'combine' | 'ignore' | 'both'
+let filterTinyEdges = false;
+let filterMode = 'ignore'; // 'combine' | 'ignore' | 'both'
 let minEdgeLength = 0.20;
 let chamferWidth = 0.5;
 let chamferSegments = 1;
 let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
-let showPreview = true;
+let showPreview = false;
 let showEdgeHighlight = true;
 let loopSelectionMode = true; // default to loop/chain selection
 let autoFixMesh = true;

@@ -525,9 +525,9 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
     width: opts.width || opts.viewportWidth || 1000,
     height: opts.height || opts.viewportHeight || 800,
   };
-  const filterTiny = opts.filterTiny !== undefined ? opts.filterTiny : true;
+  const filterTiny = opts.filterTiny !== undefined ? opts.filterTiny : false;
   const minEdgeLength = opts.minEdgeLength !== undefined ? opts.minEdgeLength : 0.20;
-  const filterMode = opts.filterMode || 'combine';
+  const filterMode = opts.filterMode || 'ignore';
   const collinearAngleDeg = opts.collinearAngleDeg || 12;
   const convexOnly = !!opts.convexOnly;
 

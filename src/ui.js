@@ -120,12 +120,13 @@ export function buildUI(callbacks) {
   edgeSection.appendChild(convexRow);
 
   // Tiny Edge Filter toggle (automatic)
-  const filterRow = toggleRow('Filter Tiny Edges', true);
+  const filterRow = toggleRow('Filter Tiny Edges', false);
   const filterInput = filterRow.querySelector('input');
   edgeSection.appendChild(filterRow);
 
   // Filter options container (Action mode + Min Length)
   const filterOptionsContainer = el('div', 'filter-options-container');
+  filterOptionsContainer.style.display = 'none';
 
   const filterModeRow = el('div', 'control-row');
   filterModeRow.style.marginTop = '4px';
@@ -134,12 +135,12 @@ export function buildUI(callbacks) {
 
   const combineBtn = document.createElement('button');
   combineBtn.textContent = 'Combine';
-  combineBtn.className = 'segment-btn active';
+  combineBtn.className = 'segment-btn';
   combineBtn.title = 'Merge collinear & micro-segments along loops into smooth continuous edges';
 
   const ignoreBtn = document.createElement('button');
   ignoreBtn.textContent = 'Ignore';
-  ignoreBtn.className = 'segment-btn';
+  ignoreBtn.className = 'segment-btn active';
   ignoreBtn.title = 'Discard isolated edges shorter than the min length threshold';
 
   const bothBtn = document.createElement('button');
@@ -392,7 +393,7 @@ export function buildUI(callbacks) {
     profileGroup.appendChild(btn);
   });
 
-  const previewToggleRow = toggleRow('Preview', true);
+  const previewToggleRow = toggleRow('Preview', false);
   previewToggleRow
     .querySelector('input')
     .addEventListener('change', (e) => callbacks.onPreviewToggle(e.target.checked));
