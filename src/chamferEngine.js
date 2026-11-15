@@ -306,11 +306,11 @@ function buildVertexChamferFrames(edges, edgeData) {
         const dirI2 = sumI2.lengthSq() > 1e-10 ? sumI2.normalize() : f1.inset2.clone();
         const cn = sumCN.lengthSq() > 1e-10 ? sumCN.normalize() : f1.cornerNorm.clone();
 
-        // Symmetrical miter scale preserves perpendicular setback across all turn angles
+        // Symmetrical miter scale preserves perpendicular setback without spike blowouts
         const miterDot1 = 0.5 * (f1.inset1.dot(dirI1) + aligned.i1.dot(dirI1));
         const miterDot2 = 0.5 * (f1.inset2.dot(dirI2) + aligned.i2.dot(dirI2));
-        const scale1 = 1 / Math.max(0.35, miterDot1);
-        const scale2 = 1 / Math.max(0.35, miterDot2);
+        const scale1 = Math.min(1.414, 1 / Math.max(0.707, miterDot1));
+        const scale2 = Math.min(1.414, 1 / Math.max(0.707, miterDot2));
 
         endpointFrames.set(key, {
           smooth: true,
@@ -601,20 +601,6 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
     arc2.push(p2.clone().addScaledVector(off, width));
   }
 
-  // Extend outer arc skirt boundaries to prevent coplanar CSG grazing (clamped at junctions)
-  const skirtExt1 = ep1.blocked ? 0 : width * 0.2;
-  const skirtExt2 = ep2.blocked ? 0 : width * 0.2;
-
-  const ext0_1 = new THREE.Vector3().subVectors(arc1[0], arc1[1]);
-  if (skirtExt1 > 0 && ext0_1.lengthSq() > 1e-12) arc1[0].addScaledVector(ext0_1.normalize(), skirtExt1);
-  const extN_1 = new THREE.Vector3().subVectors(arc1[segments], arc1[segments - 1]);
-  if (skirtExt1 > 0 && extN_1.lengthSq() > 1e-12) arc1[segments].addScaledVector(extN_1.normalize(), skirtExt1);
-
-  const ext0_2 = new THREE.Vector3().subVectors(arc2[0], arc2[1]);
-  if (skirtExt2 > 0 && ext0_2.lengthSq() > 1e-12) arc2[0].addScaledVector(ext0_2.normalize(), skirtExt2);
-  const extN_2 = new THREE.Vector3().subVectors(arc2[segments], arc2[segments - 1]);
-  if (skirtExt2 > 0 && extN_2.lengthSq() > 1e-12) arc2[segments].addScaledVector(extN_2.normalize(), skirtExt2);
-
   const apex1 = p1.clone().addScaledVector(ep1.cn, width * apexSign);
   const apex2 = p2.clone().addScaledVector(ep2.cn, width * apexSign);
 
@@ -676,7 +662,6 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
 }
 
 const CSG_BATCH_SIZE = 500;
-const MAX_CSG_PASSES = 16;
 
 function chainsConflict(cA, cB, chainBoxes, cornerVertsPerChain) {
   if (chainBoxes[cA].intersectsBox(chainBoxes[cB])) return true;
@@ -701,29 +686,22 @@ function scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, e
   const passes = [];
   for (const cIdx of order) {
     let bestPass = -1;
-    let minConflicts = Infinity;
 
     for (let p = 0; p < passes.length; p++) {
-      let conflicts = 0;
+      let conflicts = false;
       for (const other of passes[p]) {
         if (chainsConflict(cIdx, other, chainBoxes, cornerVertsPerChain)) {
-          conflicts++;
-          if (conflicts >= minConflicts) break;
+          conflicts = true;
+          break;
         }
       }
-      if (conflicts === 0) {
+      if (!conflicts) {
         bestPass = p;
         break;
       }
-      if (conflicts < minConflicts) {
-        minConflicts = conflicts;
-        bestPass = p;
-      }
     }
 
-    if (minConflicts > 0 && passes.length < MAX_CSG_PASSES) {
-      passes.push([cIdx]);
-    } else if (bestPass >= 0) {
+    if (bestPass >= 0) {
       passes[bestPass].push(cIdx);
     } else {
       passes.push([cIdx]);
