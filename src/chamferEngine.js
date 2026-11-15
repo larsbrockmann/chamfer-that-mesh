@@ -753,15 +753,22 @@ function cleanCsgGeometry(geometry, boundsBox) {
   }
 
   const count = posAttr.count;
-  const cleaned = [];
+  const pos = posAttr.array;
+  const outPositions = new Float32Array(count * 3);
+  let outIdx = 0;
+
   const minX = boundsBox.min.x, minY = boundsBox.min.y, minZ = boundsBox.min.z;
   const maxX = boundsBox.max.x, maxY = boundsBox.max.y, maxZ = boundsBox.max.z;
   const clamp = (v, min, max) => (v < min ? min : (v > max ? max : v));
 
   for (let i = 0; i + 2 < count; i += 3) {
-    const ax = posAttr.getX(i), ay = posAttr.getY(i), az = posAttr.getZ(i);
-    const bx = posAttr.getX(i + 1), by = posAttr.getY(i + 1), bz = posAttr.getZ(i + 1);
-    const cx = posAttr.getX(i + 2), cy = posAttr.getY(i + 2), cz = posAttr.getZ(i + 2);
+    const o0 = i * 3;
+    const o1 = (i + 1) * 3;
+    const o2 = (i + 2) * 3;
+
+    const ax = pos[o0], ay = pos[o0 + 1], az = pos[o0 + 2];
+    const bx = pos[o1], by = pos[o1 + 1], bz = pos[o1 + 2];
+    const cx = pos[o2], cy = pos[o2 + 1], cz = pos[o2 + 2];
 
     const abx = bx - ax, aby = by - ay, abz = bz - az;
     const acx = cx - ax, acy = cy - ay, acz = cz - az;
@@ -781,17 +788,23 @@ function cleanCsgGeometry(geometry, boundsBox) {
     if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
     if (l0 > 1e-8 && (crossSq <= l0 * l1 * 1e-4 || (l0 < 1e-3 && l2 / l0 > 1600))) continue;
 
-    cleaned.push(
-      clamp(ax, minX, maxX), clamp(ay, minY, maxY), clamp(az, minZ, maxZ),
-      clamp(bx, minX, maxX), clamp(by, minY, maxY), clamp(bz, minZ, maxZ),
-      clamp(cx, minX, maxX), clamp(cy, minY, maxY), clamp(cz, minZ, maxZ)
-    );
+    outPositions[outIdx++] = clamp(ax, minX, maxX);
+    outPositions[outIdx++] = clamp(ay, minY, maxY);
+    outPositions[outIdx++] = clamp(az, minZ, maxZ);
+
+    outPositions[outIdx++] = clamp(bx, minX, maxX);
+    outPositions[outIdx++] = clamp(by, minY, maxY);
+    outPositions[outIdx++] = clamp(bz, minZ, maxZ);
+
+    outPositions[outIdx++] = clamp(cx, minX, maxX);
+    outPositions[outIdx++] = clamp(cy, minY, maxY);
+    outPositions[outIdx++] = clamp(cz, minZ, maxZ);
   }
 
   if (geo !== geometry) geo.dispose();
 
   const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.Float32BufferAttribute(cleaned, 3));
+  out.setAttribute('position', new THREE.BufferAttribute(outPositions.subarray(0, outIdx), 3));
   return out;
 }
 
@@ -826,16 +839,30 @@ function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation, apexSi
   }
 
   const chainBoxes = chains.map((chain) => {
-    const box = new THREE.Box3();
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let hasPoints = false;
+
     for (const idx of chain) {
       const pos = edgePositions[idx];
       if (!pos) continue;
       for (let i = 0; i < pos.length; i += 3) {
-        box.expandByPoint(new THREE.Vector3(pos[i], pos[i + 1], pos[i + 2]));
+        const px = pos[i], py = pos[i + 1], pz = pos[i + 2];
+        if (px < minX) minX = px;
+        if (py < minY) minY = py;
+        if (pz < minZ) minZ = pz;
+        if (px > maxX) maxX = px;
+        if (py > maxY) maxY = py;
+        if (pz > maxZ) maxZ = pz;
+        hasPoints = true;
       }
     }
-    if (!box.isEmpty()) {
-      box.expandByScalar(width * 0.05);
+
+    const box = new THREE.Box3();
+    if (hasPoints) {
+      const pad = width * 0.05;
+      box.min.set(minX - pad, minY - pad, minZ - pad);
+      box.max.set(maxX + pad, maxY + pad, maxZ + pad);
     }
     return box;
   });
@@ -846,16 +873,23 @@ function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation, apexSi
   for (const passIndices of passes) {
     for (let offset = 0; offset < passIndices.length; offset += CSG_BATCH_SIZE) {
       const batch = passIndices.slice(offset, offset + CSG_BATCH_SIZE);
-      const cutterPositions = [];
+      let totalFloats = 0;
+      for (const idx of batch) {
+        const pos = edgePositions[idx];
+        if (pos) totalFloats += pos.length;
+      }
+      if (totalFloats === 0) continue;
+
+      const cutterPositions = new Float32Array(totalFloats);
+      let cIdx = 0;
       for (const idx of batch) {
         const pos = edgePositions[idx];
         if (pos && pos.length > 0) {
-          for (let i = 0; i < pos.length; i++) cutterPositions.push(pos[i]);
+          cutterPositions.set(pos, cIdx);
+          cIdx += pos.length;
         }
       }
-      if (cutterPositions.length > 0) {
-        batches.push({ cutterPositions, edgeCount: batch.length, operation });
-      }
+      batches.push({ cutterPositions, edgeCount: batch.length, operation });
     }
   }
 

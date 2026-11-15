@@ -238,6 +238,7 @@ export function buildUI(callbacks) {
     <option value="./models/stepped_pyramid.stl">Pyramid (Stepped)</option>
     <option value="./models/hex_nut.stl" selected>Hex Nut</option>
     <option value="./models/spur_gear.stl">Tooth Gear</option>
+    <option value="./models/metabo_base.3mf">Metabo Base (Complex 3MF)</option>
   `;
   sampleSelect.addEventListener('change', (e) => {
     if (e.target.value && callbacks.onLoadSample) {

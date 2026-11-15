@@ -26,7 +26,7 @@ function extractWeldedMesh(geometry, eps = 1e-5) {
   const vertices = [];
   const remap = new Int32Array(posAttr.count);
 
-  const cellKey = (cx, cy, cz) => `${cx},${cy},${cz}`;
+  const cellHash = (cx, cy, cz) => (((cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791)) >>> 0);
 
   for (let i = 0; i < posAttr.count; i++) {
     const x = posArray[i * 3];
@@ -43,7 +43,7 @@ function extractWeldedMesh(geometry, eps = 1e-5) {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
-          const bucket = grid.get(cellKey(cx + dx, cy + dy, cz + dz));
+          const bucket = grid.get(cellHash(cx + dx, cy + dy, cz + dz));
           if (!bucket) continue;
           for (const vIdx of bucket) {
             const v = vertices[vIdx];
@@ -63,9 +63,10 @@ function extractWeldedMesh(geometry, eps = 1e-5) {
       const idx = vertices.length;
       vertices.push(new THREE.Vector3(x, y, z));
       remap[i] = idx;
-      const key = cellKey(cx, cy, cz);
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key).push(idx);
+      const h = cellHash(cx, cy, cz);
+      let bucket = grid.get(h);
+      if (!bucket) { bucket = []; grid.set(h, bucket); }
+      bucket.push(idx);
     }
   }
 
@@ -917,7 +918,7 @@ function snapOpenBoundarySeams(vertices, tris, snapEps = 2.5e-4) {
   };
 
   let snappedCount = 0;
-  const cellKey = (cx, cy, cz) => `${cx},${cy},${cz}`;
+  const cellHash = (cx, cy, cz) => (((cx * 73856093) ^ (cy * 19349663) ^ (cz * 83492791)) >>> 0);
 
   for (const vIdx of bVerts) {
     const p = vertices[vIdx];
@@ -931,7 +932,7 @@ function snapOpenBoundarySeams(vertices, tris, snapEps = 2.5e-4) {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
-          const bucket = grid.get(cellKey(cx + dx, cy + dy, cz + dz));
+          const bucket = grid.get(cellHash(cx + dx, cy + dy, cz + dz));
           if (!bucket) continue;
           for (const other of bucket) {
             const root = findRoot(other);
@@ -950,9 +951,10 @@ function snapOpenBoundarySeams(vertices, tris, snapEps = 2.5e-4) {
       parent[vIdx] = target;
       snappedCount++;
     } else {
-      const key = cellKey(cx, cy, cz);
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key).push(vIdx);
+      const h = cellHash(cx, cy, cz);
+      let bucket = grid.get(h);
+      if (!bucket) { bucket = []; grid.set(h, bucket); }
+      bucket.push(vIdx);
     }
   }
 
@@ -1022,6 +1024,20 @@ function stitchTJunctions(vertices, tris, tJuncEps = 8e-4) {
     if (bSet.size === 0) break;
     const bVerts = Array.from(bSet);
 
+    // Spatial hash grid for boundary vertices to turn O(E_open * V_boundary) into O(E_open)
+    const cellSize = Math.max(tJuncEps * 20, 1.0);
+    const bGrid = new Map();
+    for (const pIdx of bVerts) {
+      const p = vertices[pIdx];
+      const gx = Math.floor(p.x / cellSize);
+      const gy = Math.floor(p.y / cellSize);
+      const gz = Math.floor(p.z / cellSize);
+      const key = `${gx},${gy},${gz}`;
+      let cell = bGrid.get(key);
+      if (!cell) { cell = []; bGrid.set(key, cell); }
+      cell.push(pIdx);
+    }
+
     let passSplits = 0;
     const nextTris = [];
 
@@ -1052,26 +1068,70 @@ function stitchTJunctions(vertices, tris, tJuncEps = 8e-4) {
         const minZ = Math.min(pu.z, pv.z) - tJuncEps;
         const maxZ = Math.max(pu.z, pv.z) + tJuncEps;
 
+        const minGx = Math.floor(minX / cellSize);
+        const maxGx = Math.floor(maxX / cellSize);
+        const minGy = Math.floor(minY / cellSize);
+        const maxGy = Math.floor(maxY / cellSize);
+        const minGz = Math.floor(minZ / cellSize);
+        const maxGz = Math.floor(maxZ / cellSize);
+
         const onEdge = [];
-        for (const pIdx of bVerts) {
-          if (pIdx === u || pIdx === v || pIdx === w) continue;
-          const p = vertices[pIdx];
-          if (
-            p.x < minX || p.x > maxX ||
-            p.y < minY || p.y > maxY ||
-            p.z < minZ || p.z > maxZ
-          ) {
-            continue;
+        const totalCells = (maxGx - minGx + 1) * (maxGy - minGy + 1) * (maxGz - minGz + 1);
+
+        if (totalCells <= 125) {
+          const seenPIdx = new Set();
+          for (let gx = minGx; gx <= maxGx; gx++) {
+            for (let gy = minGy; gy <= maxGy; gy++) {
+              for (let gz = minGz; gz <= maxGz; gz++) {
+                const bucket = bGrid.get(`${gx},${gy},${gz}`);
+                if (!bucket) continue;
+                for (const pIdx of bucket) {
+                  if (pIdx === u || pIdx === v || pIdx === w || seenPIdx.has(pIdx)) continue;
+                  seenPIdx.add(pIdx);
+                  const p = vertices[pIdx];
+                  if (
+                    p.x < minX || p.x > maxX ||
+                    p.y < minY || p.y > maxY ||
+                    p.z < minZ || p.z > maxZ
+                  ) {
+                    continue;
+                  }
+
+                  const t = ((p.x - pu.x) * ux + (p.y - pu.y) * uy + (p.z - pu.z) * uz) / lenSq;
+                  if (t <= 1e-5 || t >= 1 - 1e-5) continue;
+
+                  const dx = pu.x + t * ux - p.x;
+                  const dy = pu.y + t * uy - p.y;
+                  const dz = pu.z + t * uz - p.z;
+                  if (dx * dx + dy * dy + dz * dz <= epsSq) {
+                    onEdge.push({ pIdx, t });
+                  }
+                }
+              }
+            }
           }
+        } else {
+          // Fallback for unusually long edges spanning many cells
+          for (const pIdx of bVerts) {
+            if (pIdx === u || pIdx === v || pIdx === w) continue;
+            const p = vertices[pIdx];
+            if (
+              p.x < minX || p.x > maxX ||
+              p.y < minY || p.y > maxY ||
+              p.z < minZ || p.z > maxZ
+            ) {
+              continue;
+            }
 
-          const t = ((p.x - pu.x) * ux + (p.y - pu.y) * uy + (p.z - pu.z) * uz) / lenSq;
-          if (t <= 1e-5 || t >= 1 - 1e-5) continue;
+            const t = ((p.x - pu.x) * ux + (p.y - pu.y) * uy + (p.z - pu.z) * uz) / lenSq;
+            if (t <= 1e-5 || t >= 1 - 1e-5) continue;
 
-          const dx = pu.x + t * ux - p.x;
-          const dy = pu.y + t * uy - p.y;
-          const dz = pu.z + t * uz - p.z;
-          if (dx * dx + dy * dy + dz * dz <= epsSq) {
-            onEdge.push({ pIdx, t });
+            const dx = pu.x + t * ux - p.x;
+            const dy = pu.y + t * uy - p.y;
+            const dz = pu.z + t * uz - p.z;
+            if (dx * dx + dy * dy + dz * dz <= epsSq) {
+              onEdge.push({ pIdx, t });
+            }
           }
         }
 
@@ -1877,7 +1937,7 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
   let diffGeo;
   try {
     const evaluator = new Evaluator();
-    evaluator.attributes = ['position', 'normal'];
+    evaluator.attributes = ['position'];
 
     const bOrig = new Brush(origGeometry.index ? origGeometry.toNonIndexed() : origGeometry.clone());
     bOrig.updateMatrixWorld();
