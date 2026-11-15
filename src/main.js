@@ -171,7 +171,7 @@ let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
 let showPreview = false;
 let showEdgeHighlight = true;
 let loopSelectionMode = true; // default to loop/chain selection
-let autoFixMesh = true;
+let autoFixMesh = false;
 let removeUnconnectedParts = false;
 
 let autoDetectTimer = null;

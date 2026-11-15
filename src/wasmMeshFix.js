@@ -144,7 +144,7 @@ let tempFileCounter = 0;
 export async function repairMeshWasm(geometry, options = {}) {
   const {
     weldEpsilon = 1e-4,
-    maxHoleEdges = 150,
+    maxHoleEdges = 0,
     minArea = 1e-8,
     signal,
     onProgress,
@@ -188,15 +188,18 @@ export async function repairMeshWasm(geometry, options = {}) {
 
     if (signal?.aborted) throw new Error('Operation aborted');
 
-    // 3. Fill boundary damage holes while preserving intentional CAD features (bores, holes, slots)
-    onProgress?.('WASM: Triangulating damaged hole boundaries...');
+    // 3. Fill boundary damage holes only when explicitly requested (PMP has no spatial distance guard,
+    // so maxHoleEdges defaults to 0 to prevent skinning across 3D voids between CAD extrusions)
     let holesFilled = 0;
-    if (typeof analyzer.fillHolesEx === 'function') {
-      const fillResult = analyzer.fillHolesEx(maxHoleEdges, false);
-      holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
-    } else {
-      const fillResult = analyzer.fillHoles(Math.min(maxHoleEdges, 12));
-      holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+    if (maxHoleEdges > 0) {
+      onProgress?.('WASM: Triangulating damaged hole boundaries...');
+      if (typeof analyzer.fillHolesEx === 'function') {
+        const fillResult = analyzer.fillHolesEx(maxHoleEdges, false);
+        holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+      } else {
+        const fillResult = analyzer.fillHoles(Math.min(maxHoleEdges, 12));
+        holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+      }
     }
 
     // 4. Collapse degenerate / zero-area sliver triangles

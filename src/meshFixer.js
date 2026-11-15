@@ -1315,7 +1315,8 @@ export async function fixMeshAsync(geometry, options = {}) {
     weldEps = 1e-4,
     snapEps = 1e-2,
     tJuncEps = 1e-4,
-    maxHoleVertices = 150,
+    maxHoleVertices = 20,
+    maxHoleSpan = 0.2,
     removeUnconnected = false,
     useWasm = true,
     _retried = false,
@@ -1341,7 +1342,7 @@ export async function fixMeshAsync(geometry, options = {}) {
       await yieldPoint('WASM: Running C++ PMP mesh repair engine...');
       const wasmRes = await repairMeshWasm(geometry, {
         weldEpsilon: weldEps,
-        maxHoleEdges: maxHoleVertices,
+        maxHoleEdges: 0,
         minArea: 1e-8,
         signal,
         onProgress: (msg) => onProgress?.(msg),
@@ -1448,10 +1449,14 @@ export async function fixMeshAsync(geometry, options = {}) {
       }
       const loopInfo = loops[loopIdx];
       if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
-        // Skip deliberate CAD features: bores, screw holes, large openings
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-        for (const vi of loopInfo.vertices) {
+        let maxEdgeLenSq = 0;
+        const nVerts = loopInfo.vertices.length;
+
+        for (let i = 0; i < nVerts; i++) {
+          const vi = loopInfo.vertices[i];
+          const vNext = vertices[loopInfo.vertices[(i + 1) % nVerts]];
           const v = vertices[vi];
           if (v.x < minX) minX = v.x;
           if (v.y < minY) minY = v.y;
@@ -1459,10 +1464,30 @@ export async function fixMeshAsync(geometry, options = {}) {
           if (v.x > maxX) maxX = v.x;
           if (v.y > maxY) maxY = v.y;
           if (v.z > maxZ) maxZ = v.z;
+
+          const edSq = (v.x - vNext.x) ** 2 + (v.y - vNext.y) ** 2 + (v.z - vNext.z) ** 2;
+          if (edSq > maxEdgeLenSq) maxEdgeLenSq = edSq;
         }
         const loopDiag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
-        if (loopDiag > 1.5 && loopInfo.vertices.length > 8) {
-          continue; // Preserve deliberate CAD bores and openings
+
+        // Strict CAD micro-gap policy:
+        // Only fill micro-cracks where diagonal <= maxHoleSpan (0.2 mm) AND no individual edge spans > maxHoleSpan.
+        // Never skin across 3D empty space between separate extrusions or fill intentional CAD holes/bores!
+        if (loopDiag > maxHoleSpan || maxEdgeLenSq > maxHoleSpan * maxHoleSpan) {
+          continue;
+        }
+
+        // Also ensure the micro-loop is substantially planar (not a 3D saddle across features)
+        const pts = loopInfo.vertices.map((idx) => vertices[idx]);
+        const newell = computeNewellNormal(pts);
+        let maxPlaneDist = 0;
+        const origin = pts[0];
+        for (let i = 1; i < pts.length; i++) {
+          const d = Math.abs((pts[i].x - origin.x) * newell.x + (pts[i].y - origin.y) * newell.y + (pts[i].z - origin.z) * newell.z);
+          if (d > maxPlaneDist) maxPlaneDist = d;
+        }
+        if (maxPlaneDist > Math.max(maxHoleSpan * 0.4, 0.05)) {
+          continue; // Non-planar 3D loop - never skin across curved/stepped features
         }
 
         const patch = triangulateHoleLoop(vertices, loopInfo.vertices);
@@ -1632,7 +1657,8 @@ export function fixMesh(geometry, options = {}) {
     weldEps = 1e-4,
     snapEps = 1e-2,
     tJuncEps = 1e-4,
-    maxHoleVertices = 150,
+    maxHoleVertices = 20,
+    maxHoleSpan = 0.2,
     removeUnconnected = false,
     _retried = false,
     _pass2 = false,
@@ -1685,10 +1711,14 @@ export function fixMesh(geometry, options = {}) {
 
     for (const loopInfo of loops) {
       if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
-        // Skip deliberate CAD features: bores, screw holes, large openings
         let minX = Infinity, minY = Infinity, minZ = Infinity;
         let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-        for (const vi of loopInfo.vertices) {
+        let maxEdgeLenSq = 0;
+        const nVerts = loopInfo.vertices.length;
+
+        for (let i = 0; i < nVerts; i++) {
+          const vi = loopInfo.vertices[i];
+          const vNext = vertices[loopInfo.vertices[(i + 1) % nVerts]];
           const v = vertices[vi];
           if (v.x < minX) minX = v.x;
           if (v.y < minY) minY = v.y;
@@ -1696,10 +1726,30 @@ export function fixMesh(geometry, options = {}) {
           if (v.x > maxX) maxX = v.x;
           if (v.y > maxY) maxY = v.y;
           if (v.z > maxZ) maxZ = v.z;
+
+          const edSq = (v.x - vNext.x) ** 2 + (v.y - vNext.y) ** 2 + (v.z - vNext.z) ** 2;
+          if (edSq > maxEdgeLenSq) maxEdgeLenSq = edSq;
         }
         const loopDiag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
-        if (loopDiag > 1.5 && loopInfo.vertices.length > 8) {
-          continue; // Preserve deliberate CAD bores and openings
+
+        // Strict CAD micro-gap policy:
+        // Only fill micro-cracks where diagonal <= maxHoleSpan (0.2 mm) AND no individual edge spans > maxHoleSpan.
+        // Never skin across 3D empty space between separate extrusions or fill intentional CAD holes/bores!
+        if (loopDiag > maxHoleSpan || maxEdgeLenSq > maxHoleSpan * maxHoleSpan) {
+          continue;
+        }
+
+        // Also ensure the micro-loop is substantially planar (not a 3D saddle across features)
+        const pts = loopInfo.vertices.map((idx) => vertices[idx]);
+        const newell = computeNewellNormal(pts);
+        let maxPlaneDist = 0;
+        const origin = pts[0];
+        for (let i = 1; i < pts.length; i++) {
+          const d = Math.abs((pts[i].x - origin.x) * newell.x + (pts[i].y - origin.y) * newell.y + (pts[i].z - origin.z) * newell.z);
+          if (d > maxPlaneDist) maxPlaneDist = d;
+        }
+        if (maxPlaneDist > Math.max(maxHoleSpan * 0.4, 0.05)) {
+          continue; // Non-planar 3D loop - never skin across curved/stepped features
         }
 
         const patch = triangulateHoleLoop(vertices, loopInfo.vertices);
@@ -1987,7 +2037,7 @@ function computeGeometryMetrics(geometry) {
 export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options = {}) {
   const {
     maxVolumeRatio = 0.02,
-    maxAreaRatio = 0.08,
+    maxAreaRatio = 0.03,
     maxDimRatio = 0.35,
     boundExpandRatio = 0.05,
   } = options;
@@ -2029,6 +2079,24 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     fixBox.max.y > origBox.max.y + expandTol ||
     fixBox.max.z > origBox.max.z + expandTol
   );
+
+  const origPos = origGeometry.getAttribute('position');
+  const fixPos = fixedGeometry.getAttribute('position');
+  const origFaces = origPos ? Math.floor(origPos.count / 3) : 0;
+  const fixFaces = fixPos ? Math.floor(fixPos.count / 3) : 0;
+
+  // If fixed geometry has fewer or equal faces and bounds did not expand, no new geometry/bridges could have been created
+  if (!boundsExceeded && fixFaces <= origFaces) {
+    return {
+      verified: true,
+      hasLargeNewParts: false,
+      largePartsCount: 0,
+      diffTriangles: 0,
+      diffVolume: 0,
+      diffArea: 0,
+      largeParts: [],
+    };
+  }
 
   // If fixed geometry is essentially identical to original (e.g. vertices were welded without volumetric change)
   const volDiffRatio = Math.abs(fixedVol - origVol) / origVol;
@@ -2146,11 +2214,14 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     // Identify as large new part if:
     // a) Closed 3D solid with significant volume (> maxVolumeRatio); OR
     // b) Excessive surface area expansion (> maxAreaRatio); OR
-    // c) Outside original bounding envelope with non-trivial area
+    // c) Outside original bounding envelope with non-trivial area; OR
+    // d) An unattached sheet / bridge spanning across 3D space with span > 0.5 mm
+    const isBridgeSheet = !isClosedSolid && compDiag > 0.5 && compArea > 0.1 && (comp.triIndices?.length || 0) >= 2;
     const isLarge = (
       (isClosedSolid && volRatio > maxVolumeRatio) ||
       (areaRatio > maxAreaRatio) ||
-      (outOfBounds && areaRatio > 0.015)
+      (outOfBounds && areaRatio > 0.015) ||
+      isBridgeSheet
     );
 
     if (isLarge) {

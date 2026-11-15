@@ -663,7 +663,7 @@ export function buildUI(callbacks) {
   chamferSection.appendChild(resetRow);
 
   // Auto-Fix Holes & Issues toggle (runs MeshFixer automatically after chamfering if issues remain)
-  const autoFixRow = toggleRow('Auto-Fix Holes & Issues', true);
+  const autoFixRow = toggleRow('Auto-Fix Holes & Issues', false);
   autoFixRow.title = 'Automatically run MeshFixer after chamfering when open edges or holes are detected';
   const autoFixInput = autoFixRow.querySelector('input');
   autoFixInput.addEventListener('change', () => {

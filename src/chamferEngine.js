@@ -570,7 +570,7 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
   let ext1 = 0;
   if (!ep1.smooth) {
     if (ep1.blocked) {
-      ext1 = Math.min(width * 0.02, frame.edgeLen * 0.05);
+      ext1 = 0;
     } else if (isConvex) {
       ext1 = Math.min(width * 0.5, frame.edgeLen * 0.45);
     }
@@ -579,7 +579,7 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
   let ext2 = 0;
   if (!ep2.smooth) {
     if (ep2.blocked) {
-      ext2 = Math.min(width * 0.02, frame.edgeLen * 0.05);
+      ext2 = 0;
     } else if (isConvex) {
       ext2 = Math.min(width * 0.5, frame.edgeLen * 0.45);
     }
