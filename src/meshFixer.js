@@ -129,9 +129,12 @@ function buildTopology(vertices, tris) {
 
   for (let f = 0; f < tris.length; f++) {
     const [a, b, c] = tris[f];
-    if (isDegenerateTri(vertices, a, b, c)) {
+    if (a === b || b === c || c === a) {
       degenerateTriangles++;
       continue;
+    }
+    if (isDegenerateTri(vertices, a, b, c)) {
+      degenerateTriangles++;
     }
 
     for (const [u, v] of [[a, b], [b, c], [c, a]]) {
@@ -289,8 +292,8 @@ export function analyzeMesh(geometry) {
     degenerateTriangles: topo.degenerateTriangles,
     disconnectedParts,
     disconnectedTriangles,
-    isWatertight: issueCount === 0,
-    issueCount,
+    isWatertight: topo.openEdges === 0 && topo.nonManifoldEdges === 0 && disconnectedParts === 0,
+    issueCount: topo.openEdges + topo.nonManifoldEdges + disconnectedParts,
   };
 }
 

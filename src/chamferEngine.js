@@ -623,43 +623,37 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
     }
   }
 
-  // Use wedge spine midpoint between apex and bevel arc midpoint so centroid
-  // always stays strictly inside both convex and concave/acute fillet prisms.
-  const midIdx = Math.floor(segments / 2);
-  const arc1Mid = segments === 1
-    ? new THREE.Vector3().addVectors(arc1[0], arc1[1]).multiplyScalar(0.5)
-    : arc1[midIdx];
-  const arc2Mid = segments === 1
-    ? new THREE.Vector3().addVectors(arc2[0], arc2[1]).multiplyScalar(0.5)
-    : arc2[midIdx];
-  const centroid = new THREE.Vector3()
-    .add(apex1)
-    .add(apex2)
-    .add(arc1Mid)
-    .add(arc2Mid)
-    .multiplyScalar(0.25);
+  function pushTri(a, b, c) {
+    cutterPositions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  }
 
+  // Endcap 1 (at p1)
   if (!ep1.smooth) {
     for (let s = 0; s < segments; s++) {
-      pushTriOutward(cutterPositions, apex1, arc1[s], arc1[s + 1], centroid);
+      pushTri(apex1, arc1[s], arc1[s + 1]);
     }
   }
+
+  // Endcap 2 (at p2)
   if (!ep2.smooth) {
     for (let s = 0; s < segments; s++) {
-      pushTriOutward(cutterPositions, apex2, arc2[s + 1], arc2[s], centroid);
+      pushTri(apex2, arc2[s + 1], arc2[s]);
     }
   }
 
-  pushTriOutward(cutterPositions, apex1, apex2, arc2[0], centroid);
-  pushTriOutward(cutterPositions, apex1, arc2[0], arc1[0], centroid);
+  // Side 1: apex to arc[0]
+  pushTri(arc1[0], apex1, apex2);
+  pushTri(arc1[0], apex2, arc2[0]);
 
+  // Side 2: arc[last] to apex
   const last = segments;
-  pushTriOutward(cutterPositions, arc1[last], arc2[last], apex2, centroid);
-  pushTriOutward(cutterPositions, arc1[last], apex2, apex1, centroid);
+  pushTri(apex1, arc1[last], arc2[last]);
+  pushTri(apex1, arc2[last], apex2);
 
+  // Bevel quads
   for (let s = 0; s < segments; s++) {
-    pushTriOutward(cutterPositions, arc1[s], arc1[s + 1], arc2[s + 1], centroid);
-    pushTriOutward(cutterPositions, arc1[s], arc2[s + 1], arc2[s], centroid);
+    pushTri(arc1[s], arc2[s], arc2[s + 1]);
+    pushTri(arc1[s], arc2[s + 1], arc1[s + 1]);
   }
 }
 
@@ -1072,6 +1066,26 @@ export async function applyChamferWithManifold(geometry, batches, options = {}) 
   }
 
   if (curManifold.status() !== 'NoError') return null;
+
+  try {
+    curManifold = curManifold.simplify(1e-4);
+  } catch (_) {
+    /* ignore simplify error if any */
+  }
+
+  // Discard any micro-slivers severed by chamfer cuts (< 1% of total volume)
+  try {
+    const parts = curManifold.decompose();
+    if (parts.length > 1) {
+      const totalVol = Math.abs(curManifold.volume());
+      const mainParts = parts.filter((p) => Math.abs(p.volume()) > totalVol * 0.01);
+      if (mainParts.length > 0 && mainParts.length < parts.length) {
+        curManifold = Manifold.compose(mainParts);
+      }
+    }
+  } catch (_) {
+    /* ignore decompose error if any */
+  }
 
   const outMesh = curManifold.getMesh();
   const outGeo = new THREE.BufferGeometry();
