@@ -1448,6 +1448,23 @@ export async function fixMeshAsync(geometry, options = {}) {
       }
       const loopInfo = loops[loopIdx];
       if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
+        // Skip deliberate CAD features: bores, screw holes, large openings
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (const vi of loopInfo.vertices) {
+          const v = vertices[vi];
+          if (v.x < minX) minX = v.x;
+          if (v.y < minY) minY = v.y;
+          if (v.z < minZ) minZ = v.z;
+          if (v.x > maxX) maxX = v.x;
+          if (v.y > maxY) maxY = v.y;
+          if (v.z > maxZ) maxZ = v.z;
+        }
+        const loopDiag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+        if (loopDiag > 1.5 && loopInfo.vertices.length > 8) {
+          continue; // Preserve deliberate CAD bores and openings
+        }
+
         const patch = triangulateHoleLoop(vertices, loopInfo.vertices);
         const loopNormal = loopInfo.vertices.length > 4
           ? computeNewellNormal(loopInfo.vertices.map((idx) => vertices[idx]))
@@ -1668,6 +1685,23 @@ export function fixMesh(geometry, options = {}) {
 
     for (const loopInfo of loops) {
       if (loopInfo.closed && loopInfo.vertices.length >= 3 && loopInfo.vertices.length <= maxHoleVertices) {
+        // Skip deliberate CAD features: bores, screw holes, large openings
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (const vi of loopInfo.vertices) {
+          const v = vertices[vi];
+          if (v.x < minX) minX = v.x;
+          if (v.y < minY) minY = v.y;
+          if (v.z < minZ) minZ = v.z;
+          if (v.x > maxX) maxX = v.x;
+          if (v.y > maxY) maxY = v.y;
+          if (v.z > maxZ) maxZ = v.z;
+        }
+        const loopDiag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ);
+        if (loopDiag > 1.5 && loopInfo.vertices.length > 8) {
+          continue; // Preserve deliberate CAD bores and openings
+        }
+
         const patch = triangulateHoleLoop(vertices, loopInfo.vertices);
         const loopNormal = loopInfo.vertices.length > 4
           ? computeNewellNormal(loopInfo.vertices.map((idx) => vertices[idx]))

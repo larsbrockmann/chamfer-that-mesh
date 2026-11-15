@@ -757,10 +757,6 @@ function cleanCsgGeometry(geometry, boundsBox) {
   const outPositions = new Float32Array(count * 3);
   let outIdx = 0;
 
-  const minX = boundsBox.min.x, minY = boundsBox.min.y, minZ = boundsBox.min.z;
-  const maxX = boundsBox.max.x, maxY = boundsBox.max.y, maxZ = boundsBox.max.z;
-  const clamp = (v, min, max) => (v < min ? min : (v > max ? max : v));
-
   for (let i = 0; i + 2 < count; i += 3) {
     const o0 = i * 3;
     const o1 = (i + 1) * 3;
@@ -772,33 +768,25 @@ function cleanCsgGeometry(geometry, boundsBox) {
 
     const abx = bx - ax, aby = by - ay, abz = bz - az;
     const acx = cx - ax, acy = cy - ay, acz = cz - az;
-    const bcx = cx - bx, bcy = cy - by, bcz = cz - bz;
 
     const nx = aby * acz - abz * acy;
     const ny = abz * acx - abx * acz;
     const nz = abx * acy - aby * acx;
     const crossSq = nx * nx + ny * ny + nz * nz;
-    if (crossSq < 1e-12) continue;
+    // Only drop strictly collinear / zero-area triangles
+    if (crossSq < 1e-22) continue;
 
-    let l0 = abx * abx + aby * aby + abz * abz;
-    let l1 = acx * acx + acy * acy + acz * acz;
-    let l2 = bcx * bcx + bcy * bcy + bcz * bcz;
-    if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
-    if (l1 > l2) { const t = l1; l1 = l2; l2 = t; }
-    if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
-    if (l0 > 1e-8 && (crossSq <= l0 * l1 * 1e-4 || (l0 < 1e-3 && l2 / l0 > 1600))) continue;
+    outPositions[outIdx++] = ax;
+    outPositions[outIdx++] = ay;
+    outPositions[outIdx++] = az;
 
-    outPositions[outIdx++] = clamp(ax, minX, maxX);
-    outPositions[outIdx++] = clamp(ay, minY, maxY);
-    outPositions[outIdx++] = clamp(az, minZ, maxZ);
+    outPositions[outIdx++] = bx;
+    outPositions[outIdx++] = by;
+    outPositions[outIdx++] = bz;
 
-    outPositions[outIdx++] = clamp(bx, minX, maxX);
-    outPositions[outIdx++] = clamp(by, minY, maxY);
-    outPositions[outIdx++] = clamp(bz, minZ, maxZ);
-
-    outPositions[outIdx++] = clamp(cx, minX, maxX);
-    outPositions[outIdx++] = clamp(cy, minY, maxY);
-    outPositions[outIdx++] = clamp(cz, minZ, maxZ);
+    outPositions[outIdx++] = cx;
+    outPositions[outIdx++] = cy;
+    outPositions[outIdx++] = cz;
   }
 
   if (geo !== geometry) geo.dispose();

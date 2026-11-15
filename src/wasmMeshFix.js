@@ -188,10 +188,16 @@ export async function repairMeshWasm(geometry, options = {}) {
 
     if (signal?.aborted) throw new Error('Operation aborted');
 
-    // 3. Fill boundary holes with curvature fairing
-    onProgress?.('WASM: Triangulating and fairing holes...');
-    const fillResult = analyzer.fillHoles(maxHoleEdges);
-    const holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+    // 3. Fill boundary damage holes while preserving intentional CAD features (bores, holes, slots)
+    onProgress?.('WASM: Triangulating damaged hole boundaries...');
+    let holesFilled = 0;
+    if (typeof analyzer.fillHolesEx === 'function') {
+      const fillResult = analyzer.fillHolesEx(maxHoleEdges, false);
+      holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+    } else {
+      const fillResult = analyzer.fillHoles(Math.min(maxHoleEdges, 12));
+      holesFilled = typeof fillResult === 'number' ? fillResult : (fillResult?.holesFilled || 0);
+    }
 
     // 4. Collapse degenerate / zero-area sliver triangles
     onProgress?.('WASM: Collapsing degenerate slivers...');
@@ -219,13 +225,14 @@ export async function repairMeshWasm(geometry, options = {}) {
     const indexCount = dv.getUint32(4, true);
 
     const posArray = new Float32Array(bufCopy, 8, vertexCount * 3);
-    const normArray = new Float32Array(bufCopy, 8 + vertexCount * 12, vertexCount * 3);
     const idxArray = new Uint32Array(bufCopy, 8 + vertexCount * 24, indexCount);
 
-    const fixedGeo = new THREE.BufferGeometry();
-    fixedGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-    fixedGeo.setAttribute('normal', new THREE.BufferAttribute(normArray, 3));
-    fixedGeo.setIndex(new THREE.BufferAttribute(idxArray, 1));
+    const indexedGeo = new THREE.BufferGeometry();
+    indexedGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+    indexedGeo.setIndex(new THREE.BufferAttribute(idxArray, 1));
+    const fixedGeo = indexedGeo.toNonIndexed();
+    fixedGeo.computeVertexNormals();
+    indexedGeo.dispose();
 
     return {
       geometry: fixedGeo,
