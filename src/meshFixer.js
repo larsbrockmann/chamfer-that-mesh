@@ -1342,6 +1342,36 @@ export async function fixMeshAsync(geometry, options = {}) {
 
   const beforeStats = analyzeMesh(geometry);
 
+  // If the mesh is ALREADY 100% watertight and 2-manifold (0 open edges, 0 non-manifold edges):
+  // Never run destructive pruning or heuristic hole-filling on an already-watertight manifold body!
+  if (beforeStats.isWatertight && beforeStats.openEdges === 0 && beforeStats.nonManifoldEdges === 0) {
+    if (removeUnconnected && beforeStats.disconnectedParts > 0) {
+      const pruned = removeDisconnectedParts(geometry, { weldEps });
+      return {
+        geometry: pruned.geometry,
+        beforeStats,
+        afterStats: pruned.afterStats,
+        holesFilled: 0,
+        edgesStitched: 0,
+        degeneratesRemoved: pruned.trianglesRemoved,
+        partsRemoved: pruned.partsRemoved,
+        verification: { verified: true, hasLargeNewParts: false },
+        engine: 'clean-parts',
+      };
+    }
+    return {
+      geometry: geometry.clone(),
+      beforeStats,
+      afterStats: { ...beforeStats },
+      holesFilled: 0,
+      edgesStitched: 0,
+      degeneratesRemoved: 0,
+      partsRemoved: 0,
+      verification: { verified: true, hasLargeNewParts: false },
+      engine: 'already-watertight',
+    };
+  }
+
   // ---- 0. Industrial C++ WebAssembly Engine (PMP) ----
   if (useWasm && isWasmMeshFixSupported() && !_pass2 && !_retried) {
     try {
@@ -1638,6 +1668,31 @@ export async function fixMeshAsync(geometry, options = {}) {
     }
   }
 
+  // Guard against repair regressions: never accept a candidate that introduces more issues or breaks watertightness
+  if (
+    finalStats.issueCount > beforeStats.issueCount ||
+    (beforeStats.isWatertight && !finalStats.isWatertight) ||
+    finalStats.openEdges > beforeStats.openEdges
+  ) {
+    console.warn(`MeshFixer would worsen mesh (issues: ${beforeStats.issueCount} -> ${finalStats.issueCount}, open edges: ${beforeStats.openEdges} -> ${finalStats.openEdges}). Rejecting repair.`);
+    finalGeo.dispose();
+    return {
+      geometry: geometry.clone(),
+      beforeStats,
+      afterStats: { ...beforeStats },
+      holesFilled: 0,
+      edgesStitched: 0,
+      degeneratesRemoved: 0,
+      partsRemoved: 0,
+      verification: {
+        verified: false,
+        rejected: true,
+        reason: 'Repair introduced open edges or worsened mesh issues',
+      },
+      engine: 'rejected',
+    };
+  }
+
   return {
     geometry: finalGeo,
     beforeStats,
@@ -1671,6 +1726,36 @@ export function fixMesh(geometry, options = {}) {
   } = options;
 
   const beforeStats = analyzeMesh(geometry);
+
+  // If the mesh is ALREADY 100% watertight and 2-manifold (0 open edges, 0 non-manifold edges):
+  // Never run destructive pruning or heuristic hole-filling on an already-watertight manifold body!
+  if (beforeStats.isWatertight && beforeStats.openEdges === 0 && beforeStats.nonManifoldEdges === 0) {
+    if (removeUnconnected && beforeStats.disconnectedParts > 0) {
+      const pruned = removeDisconnectedParts(geometry, { weldEps });
+      return {
+        geometry: pruned.geometry,
+        beforeStats,
+        afterStats: pruned.afterStats,
+        holesFilled: 0,
+        edgesStitched: 0,
+        degeneratesRemoved: pruned.trianglesRemoved,
+        partsRemoved: pruned.partsRemoved,
+        verification: { verified: true, hasLargeNewParts: false },
+        engine: 'clean-parts',
+      };
+    }
+    return {
+      geometry: geometry.clone(),
+      beforeStats,
+      afterStats: { ...beforeStats },
+      holesFilled: 0,
+      edgesStitched: 0,
+      degeneratesRemoved: 0,
+      partsRemoved: 0,
+      verification: { verified: true, hasLargeNewParts: false },
+      engine: 'already-watertight',
+    };
+  }
 
   // Pass 1: Vertex welding + degenerate/duplicate, stray non-manifold fin & loose part pruning
   const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
@@ -1897,6 +1982,31 @@ export function fixMesh(geometry, options = {}) {
     }
   }
 
+  // Guard against repair regressions: never accept a candidate that introduces more issues or breaks watertightness
+  if (
+    finalStats.issueCount > beforeStats.issueCount ||
+    (beforeStats.isWatertight && !finalStats.isWatertight) ||
+    finalStats.openEdges > beforeStats.openEdges
+  ) {
+    console.warn(`MeshFixer would worsen mesh (issues: ${beforeStats.issueCount} -> ${finalStats.issueCount}, open edges: ${beforeStats.openEdges} -> ${finalStats.openEdges}). Rejecting repair.`);
+    finalGeo.dispose();
+    return {
+      geometry: geometry.clone(),
+      beforeStats,
+      afterStats: { ...beforeStats },
+      holesFilled: 0,
+      edgesStitched: 0,
+      degeneratesRemoved: 0,
+      partsRemoved: 0,
+      verification: {
+        verified: false,
+        rejected: true,
+        reason: 'Repair introduced open edges or worsened mesh issues',
+      },
+      engine: 'rejected',
+    };
+  }
+
   return {
     geometry: finalGeo,
     beforeStats,
@@ -1919,6 +2029,15 @@ export function fixMesh(geometry, options = {}) {
 export function removeDisconnectedParts(geometry, options = {}) {
   const { weldEps = 1e-5, maxAreaRatio = 0.05, keepOnlyLargest = false } = options;
   const beforeStats = analyzeMesh(geometry);
+  if (beforeStats.disconnectedParts === 0) {
+    return {
+      geometry: geometry.clone(),
+      partsRemoved: 0,
+      trianglesRemoved: 0,
+      beforeStats,
+      afterStats: { ...beforeStats },
+    };
+  }
   const { vertices, tris: rawTris } = extractWeldedMesh(geometry, weldEps);
   // Only drop exact duplicates / zero-area triangles here; never touch the main body's
   // non-manifold seams (that is MeshFixer's job), so this stays a pure loose-part cleanup.

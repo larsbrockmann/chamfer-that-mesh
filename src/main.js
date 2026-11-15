@@ -1116,6 +1116,15 @@ async function handleRunMeshFixer() {
   if (isProcessingMesh || !currentMesh) return;
 
   const before = analyzeMesh(currentMesh.geometry);
+  if (
+    before.isWatertight &&
+    before.openEdges === 0 &&
+    before.nonManifoldEdges === 0 &&
+    (!removeUnconnectedParts || before.disconnectedParts === 0)
+  ) {
+    showToast('✓ Mesh is already 100% watertight — no repair needed', 'is-selected');
+    return;
+  }
 
   isProcessingMesh = true;
   activeAbortController = new AbortController();
@@ -1189,13 +1198,12 @@ async function handleRunMeshFixer() {
       return;
     }
 
-    const fixedCount =
-      fixRes.holesFilled +
-      fixRes.edgesStitched +
-      fixRes.degeneratesRemoved +
-      (fixRes.partsRemoved || 0);
-    const improved = fixedCount > 0 || fixRes.afterStats.issueCount < before.issueCount;
-    if (!improved) {
+    const improved =
+      (!before.isWatertight && fixRes.afterStats.isWatertight) ||
+      (fixRes.afterStats.issueCount < before.issueCount && (!before.isWatertight || fixRes.afterStats.isWatertight)) ||
+      (before.isWatertight && fixRes.afterStats.isWatertight && (fixRes.partsRemoved || 0) > 0);
+
+    if (!improved || fixRes.verification?.rejected || (before.isWatertight && !fixRes.afterStats.isWatertight)) {
       fixRes.geometry.dispose();
       const popped = undoStack.pop();
       popped?.geo?.dispose();
@@ -1203,10 +1211,10 @@ async function handleRunMeshFixer() {
       setProcessingState(false);
       refreshInfo();
       showToast(
-        fixRes.afterStats.isWatertight
-          ? 'Mesh is already watertight'
-          : `No automatic fix applied (${fixRes.afterStats.issueCount} issue(s) remain)`,
-        fixRes.afterStats.isWatertight ? 'is-selected' : 'is-unselected'
+        before.isWatertight
+          ? '✓ Mesh is already watertight — mesh unchanged'
+          : `No repair applied (${fixRes.afterStats.issueCount} issue(s) remain)`,
+        before.isWatertight ? 'is-selected' : 'is-unselected'
       );
       return;
     }
