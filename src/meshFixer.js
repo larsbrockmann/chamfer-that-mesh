@@ -4,6 +4,7 @@
    ============================================================ */
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
+import { repairMeshWasm, isWasmMeshFixSupported } from './wasmMeshFix.js';
 
 /**
  * Extract raw vertex array and triangle index triples via boundary-safe
@@ -1316,6 +1317,7 @@ export async function fixMeshAsync(geometry, options = {}) {
     tJuncEps = 1e-4,
     maxHoleVertices = 150,
     removeUnconnected = false,
+    useWasm = true,
     _retried = false,
     _pass2 = false,
     signal,
@@ -1332,6 +1334,62 @@ export async function fixMeshAsync(geometry, options = {}) {
   };
 
   const beforeStats = analyzeMesh(geometry);
+
+  // ---- 0. Industrial C++ WebAssembly Engine (PMP) ----
+  if (useWasm && isWasmMeshFixSupported() && !_pass2 && !_retried) {
+    try {
+      await yieldPoint('WASM: Running C++ PMP mesh repair engine...');
+      const wasmRes = await repairMeshWasm(geometry, {
+        weldEpsilon: weldEps,
+        maxHoleEdges: maxHoleVertices,
+        minArea: 1e-8,
+        signal,
+        onProgress: (msg) => onProgress?.(msg),
+      });
+
+      if (wasmRes && wasmRes.geometry) {
+        let candidateGeo = wasmRes.geometry;
+        let candidateStats = analyzeMesh(candidateGeo);
+
+        let partsRemoved = 0;
+        let degenRemoved = 0;
+        if (removeUnconnected) {
+          const pruned = removeDisconnectedParts(candidateGeo);
+          candidateGeo.dispose();
+          candidateGeo = pruned.geometry;
+          candidateStats = pruned.afterStats;
+          partsRemoved += pruned.partsRemoved;
+          degenRemoved += pruned.trianglesRemoved;
+        }
+
+        let verification = null;
+        if (options.verifyBoolDiff !== false) {
+          await yieldPoint('Verifying repaired geometry against original body...');
+          verification = verifyMeshFixWithBoolDiff(geometry, candidateGeo, options);
+        }
+
+        if (!verification || !verification.hasLargeNewParts) {
+          return {
+            geometry: candidateGeo,
+            beforeStats,
+            afterStats: candidateStats,
+            holesFilled: wasmRes.holesFilled,
+            edgesStitched: Math.max(0, wasmRes.verticesBefore - wasmRes.verticesAfter),
+            degeneratesRemoved: degenRemoved,
+            partsRemoved,
+            verification,
+            engine: 'wasm-pmp',
+          };
+        } else {
+          console.warn('WASM repair produced unexpected extra volume; falling back to topological stitcher');
+          candidateGeo.dispose();
+        }
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.message === 'Operation aborted') throw err;
+      console.warn('WASM repair bypassed, falling back to JS topological stitcher:', err);
+    }
+  }
 
   await yieldPoint('Pass 1: Welding vertices & pruning degenerates...');
 
@@ -1841,41 +1899,33 @@ export function findLooseParts(geometry, options = {}) {
 }
 
 /**
- * Compute signed volume of non-indexed or indexed BufferGeometry triangles.
+ * Compute signed volume and surface area of non-indexed or indexed BufferGeometry triangles.
  */
-function computeMeshVolumeFromPos(posAttr) {
-  if (!posAttr || posAttr.count < 3) return 0;
-  let vol = 0;
-  const p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3();
-  const triCount = Math.floor(posAttr.count / 3);
-  for (let i = 0; i < triCount; i++) {
-    p1.fromBufferAttribute(posAttr, i * 3);
-    p2.fromBufferAttribute(posAttr, i * 3 + 1);
-    p3.fromBufferAttribute(posAttr, i * 3 + 2);
-    vol += p1.dot(p2.cross(p3)) / 6.0;
+function computeGeometryMetrics(geometry) {
+  if (!geometry) return { volume: 0, area: 0 };
+  const geo = geometry.index ? geometry.toNonIndexed() : geometry;
+  const pos = geo.getAttribute('position');
+  if (!pos || pos.count < 3) {
+    if (geo !== geometry) geo.dispose();
+    return { volume: 0, area: 0 };
   }
-  return Math.abs(vol);
-}
-
-/**
- * Compute total surface area of non-indexed BufferGeometry triangles.
- */
-function computeMeshAreaFromPos(posAttr) {
-  if (!posAttr || posAttr.count < 3) return 0;
+  let vol = 0;
   let area = 0;
   const p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3();
   const ab = new THREE.Vector3(), ac = new THREE.Vector3(), cross = new THREE.Vector3();
-  const triCount = Math.floor(posAttr.count / 3);
+  const triCount = Math.floor(pos.count / 3);
   for (let i = 0; i < triCount; i++) {
-    p1.fromBufferAttribute(posAttr, i * 3);
-    p2.fromBufferAttribute(posAttr, i * 3 + 1);
-    p3.fromBufferAttribute(posAttr, i * 3 + 2);
+    p1.fromBufferAttribute(pos, i * 3);
+    p2.fromBufferAttribute(pos, i * 3 + 1);
+    p3.fromBufferAttribute(pos, i * 3 + 2);
+    vol += p1.dot(p2.cross(p3)) / 6.0;
     ab.subVectors(p2, p1);
     ac.subVectors(p3, p1);
     cross.crossVectors(ab, ac);
     area += 0.5 * cross.length();
   }
-  return area;
+  if (geo !== geometry) geo.dispose();
+  return { volume: Math.abs(vol), area };
 }
 
 /**
@@ -1920,18 +1970,46 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     };
   }
 
-  // 1. Analyze original body bounds and metrics
+  // 1. Analyze original and fixed body bounds and metrics
   if (!origGeometry.boundingBox) origGeometry.computeBoundingBox();
+  if (!fixedGeometry.boundingBox) fixedGeometry.computeBoundingBox();
   const origBox = origGeometry.boundingBox.clone();
+  const fixBox = fixedGeometry.boundingBox.clone();
   const origSize = origBox.getSize(new THREE.Vector3());
   const origDiag = Math.max(origSize.length(), 1e-4);
-  const origPos = origGeometry.getAttribute('position');
-  const origArea = Math.max(computeMeshAreaFromPos(origPos), 1e-4);
-  const origVol = Math.max(
-    computeMeshVolumeFromPos(origPos),
-    origSize.x * origSize.y * origSize.z * 0.15,
-    1e-4
+
+  const origMetrics = computeGeometryMetrics(origGeometry);
+  const origArea = Math.max(origMetrics.area, 1e-4);
+  const origVol = Math.max(origMetrics.volume, origSize.x * origSize.y * origSize.z * 0.15, 1e-4);
+
+  const fixedMetrics = computeGeometryMetrics(fixedGeometry);
+  const fixedVol = fixedMetrics.volume;
+  const fixedArea = fixedMetrics.area;
+
+  const expandTol = Math.max(origDiag * boundExpandRatio, 0.5);
+  const boundsExceeded = (
+    fixBox.min.x < origBox.min.x - expandTol ||
+    fixBox.min.y < origBox.min.y - expandTol ||
+    fixBox.min.z < origBox.min.z - expandTol ||
+    fixBox.max.x > origBox.max.x + expandTol ||
+    fixBox.max.y > origBox.max.y + expandTol ||
+    fixBox.max.z > origBox.max.z + expandTol
   );
+
+  // If fixed geometry is essentially identical to original (e.g. vertices were welded without volumetric change)
+  const volDiffRatio = Math.abs(fixedVol - origVol) / origVol;
+  const areaDiffRatio = Math.abs(fixedArea - origArea) / origArea;
+  if (!boundsExceeded && volDiffRatio < 0.005 && areaDiffRatio < 0.01) {
+    return {
+      verified: true,
+      hasLargeNewParts: false,
+      largePartsCount: 0,
+      diffTriangles: 0,
+      diffVolume: 0,
+      diffArea: 0,
+      largeParts: [],
+    };
+  }
 
   // 2. Perform CSG Boolean Difference: Fixed - Original
   let diffGeo;
@@ -1948,17 +2026,6 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     diffGeo = diffResult?.geometry || null;
   } catch (err) {
     console.warn('verifyMeshFixWithBoolDiff: CSG difference evaluation failed, fallback to geometric bounds:', err);
-    if (!fixedGeometry.boundingBox) fixedGeometry.computeBoundingBox();
-    const fixBox = fixedGeometry.boundingBox;
-    const expandTol = Math.max(origDiag * boundExpandRatio, 0.5);
-    const boundsExceeded = (
-      fixBox.min.x < origBox.min.x - expandTol ||
-      fixBox.min.y < origBox.min.y - expandTol ||
-      fixBox.min.z < origBox.min.z - expandTol ||
-      fixBox.max.x > origBox.max.x + expandTol ||
-      fixBox.max.y > origBox.max.y + expandTol ||
-      fixBox.max.z > origBox.max.z + expandTol
-    );
     return {
       verified: !boundsExceeded,
       hasLargeNewParts: boundsExceeded,
@@ -1986,41 +2053,48 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     };
   }
 
-  diffGeo.computeBoundingBox();
-  const diffBox = diffGeo.boundingBox;
-  const diffSize = diffBox.getSize(new THREE.Vector3());
-  const diffVol = computeMeshVolumeFromPos(diffPos);
-  const diffArea = computeMeshAreaFromPos(diffPos);
-
   // 3. Cluster diff triangles into connected components / parts
   const { vertices: diffVertices, tris: diffTris } = extractWeldedMesh(diffGeo, 1e-4);
   const diffComponents = findConnectedComponents(diffVertices, diffTris, 0.0);
-
-  const expandTol = Math.max(origDiag * boundExpandRatio, 0.5);
   const largeParts = [];
 
-  const componentsToInspect = diffComponents.length > 0
-    ? diffComponents
-    : [{
-        triIndices: Array.from({ length: diffTriCount }, (_, i) => i),
-        area: diffArea,
-        minX: diffBox.min.x, maxX: diffBox.max.x,
-        minY: diffBox.min.y, maxY: diffBox.max.y,
-        minZ: diffBox.min.z, maxZ: diffBox.max.z,
-      }];
-
-  for (const comp of componentsToInspect) {
+  for (const comp of diffComponents) {
     const compArea = comp.area || 0;
     const dx = Math.max(comp.maxX - comp.minX, 0);
     const dy = Math.max(comp.maxY - comp.minY, 0);
     const dz = Math.max(comp.maxZ - comp.minZ, 0);
     const compDiag = Math.hypot(dx, dy, dz);
-    const compThickness = Math.min(dx, dy, dz);
 
-    const compVolume = Math.min(
-      dx * dy * dz,
-      diffVol * (diffArea > 0 ? compArea / diffArea : 1.0)
-    );
+    // Determine if this component forms a closed solid shell or an open surface sheet
+    const edgeCounts = new Map();
+    for (const f of comp.triIndices) {
+      const [a, b, c] = diffTris[f];
+      const e1 = a < b ? `${a}_${b}` : `${b}_${a}`;
+      const e2 = b < c ? `${b}_${c}` : `${c}_${b}`;
+      const e3 = c < a ? `${c}_${a}` : `${a}_${c}`;
+      edgeCounts.set(e1, (edgeCounts.get(e1) || 0) + 1);
+      edgeCounts.set(e2, (edgeCounts.get(e2) || 0) + 1);
+      edgeCounts.set(e3, (edgeCounts.get(e3) || 0) + 1);
+    }
+    let openEdges = 0;
+    for (const cnt of edgeCounts.values()) {
+      if (cnt === 1) openEdges++;
+    }
+    const isClosedSolid = openEdges === 0 && comp.triIndices.length >= 4;
+
+    let compVolume = 0;
+    if (isClosedSolid) {
+      const p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3();
+      for (const f of comp.triIndices) {
+        const [a, b, c] = diffTris[f];
+        const va = diffVertices[a], vb = diffVertices[b], vc = diffVertices[c];
+        p1.set(va.x, va.y, va.z);
+        p2.set(vb.x, vb.y, vb.z);
+        p3.set(vc.x, vc.y, vc.z);
+        compVolume += p1.dot(p2.cross(p3)) / 6.0;
+      }
+      compVolume = Math.abs(compVolume);
+    }
 
     const volRatio = compVolume / origVol;
     const areaRatio = compArea / origArea;
@@ -2036,14 +2110,12 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     );
 
     // Identify as large new part if:
-    // a) Substantial 3D volume with physical thickness (not a 2D planar hole patch); OR
+    // a) Closed 3D solid with significant volume (> maxVolumeRatio); OR
     // b) Excessive surface area expansion (> maxAreaRatio); OR
-    // c) Spans a large fraction of model diagonal with non-trivial area; OR
-    // d) Outside original bounding envelope with non-trivial area
+    // c) Outside original bounding envelope with non-trivial area
     const isLarge = (
-      (volRatio > maxVolumeRatio && compThickness > origDiag * 0.02) ||
+      (isClosedSolid && volRatio > maxVolumeRatio) ||
       (areaRatio > maxAreaRatio) ||
-      (dimRatio > maxDimRatio && areaRatio > maxAreaRatio * 0.5) ||
       (outOfBounds && areaRatio > 0.015)
     );
 
@@ -2061,6 +2133,15 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     }
   }
 
+  let totalNewVol = 0;
+  let totalNewArea = 0;
+  for (const comp of diffComponents) {
+    totalNewArea += (comp.area || 0);
+  }
+  for (const p of largeParts) {
+    totalNewVol += p.volume;
+  }
+
   const hasLargeNewParts = largeParts.length > 0;
   let reason;
   if (hasLargeNewParts) {
@@ -2074,8 +2155,8 @@ export function verifyMeshFixWithBoolDiff(origGeometry, fixedGeometry, options =
     hasLargeNewParts,
     largePartsCount: largeParts.length,
     diffTriangles: diffTriCount,
-    diffVolume: diffVol,
-    diffArea,
+    diffVolume: totalNewVol,
+    diffArea: totalNewArea,
     largeParts,
     reason,
   };

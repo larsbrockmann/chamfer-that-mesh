@@ -878,6 +878,7 @@ function handleToggleLoosePartsPreview() {
 
 function formatMeshFixSummary(fixRes) {
   const parts = [];
+  if (fixRes.engine === 'wasm-pmp') parts.push('C++ WASM');
   if (fixRes.holesFilled > 0) parts.push(`${fixRes.holesFilled} hole${fixRes.holesFilled > 1 ? 's' : ''} filled`);
   if (fixRes.edgesStitched > 0) parts.push(`${fixRes.edgesStitched} edge${fixRes.edgesStitched > 1 ? 's' : ''} stitched`);
   if (fixRes.partsRemoved > 0) parts.push(`${fixRes.partsRemoved} loose part${fixRes.partsRemoved > 1 ? 's' : ''} removed`);
@@ -1115,11 +1116,6 @@ async function handleRunMeshFixer() {
   if (isProcessingMesh || !currentMesh) return;
 
   const before = analyzeMesh(currentMesh.geometry);
-  if (before.isWatertight && before.issueCount === 0) {
-    refreshInfo();
-    showToast('Mesh is already watertight with 0 issues', 'is-selected');
-    return;
-  }
 
   isProcessingMesh = true;
   activeAbortController = new AbortController();
