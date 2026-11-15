@@ -21,6 +21,19 @@ function extractWeldedMesh(geometry, eps = 1e-5) {
   const indices = indexed ? geometry.index.array : null;
   const triCount = Math.floor(indexed ? geometry.index.count / 3 : posAttr.count / 3);
 
+  if (indexed) {
+    const vCount = posAttr.count;
+    const vertices = new Array(vCount);
+    for (let i = 0; i < vCount; i++) {
+      vertices[i] = new THREE.Vector3(posArray[i * 3], posArray[i * 3 + 1], posArray[i * 3 + 2]);
+    }
+    const tris = new Array(triCount);
+    for (let f = 0; f < triCount; f++) {
+      tris[f] = [indices[f * 3], indices[f * 3 + 1], indices[f * 3 + 2]];
+    }
+    return { vertices, tris };
+  }
+
   const cellSize = Math.max(eps * 2.5, 1e-6);
   const epsSq = eps * eps;
   const grid = new Map();
@@ -82,7 +95,7 @@ function extractWeldedMesh(geometry, eps = 1e-5) {
   return { vertices, tris };
 }
 
-function isDegenerateTri(vertices, a, b, c, areaEpsSq = 1e-16) {
+function isDegenerateTri(vertices, a, b, c, areaEpsSq = 1e-18) {
   if (a === b || b === c || c === a) return true;
   const va = vertices[a];
   const vb = vertices[b];
@@ -93,17 +106,7 @@ function isDegenerateTri(vertices, a, b, c, areaEpsSq = 1e-16) {
   const cy = abz * acx - abx * acz;
   const cz = abx * acy - aby * acx;
   const crossSq = cx * cx + cy * cy + cz * cz;
-  if (crossSq < areaEpsSq) return true;
-
-  // Reject 1D obtuse collinear CSG spikes (interior angle >= 179.98 deg)
-  const bcx = vc.x - vb.x, bcy = vc.y - vb.y, bcz = vc.z - vb.z;
-  let l0 = abx * abx + aby * aby + abz * abz;
-  let l1 = acx * acx + acy * acy + acz * acz;
-  let l2 = bcx * bcx + bcy * bcy + bcz * bcz;
-  if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
-  if (l1 > l2) { const t = l1; l1 = l2; l2 = t; }
-  if (l0 > l1) { const t = l0; l0 = l1; l1 = t; }
-  return l0 > 1e-8 && l0 + l1 < l2 && crossSq <= l0 * l1 * 1e-7;
+  return crossSq < areaEpsSq;
 }
 
 function canonicalTriKey(a, b, c) {
