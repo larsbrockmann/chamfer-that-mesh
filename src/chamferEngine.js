@@ -500,16 +500,74 @@ function pushTriOutward(arr, a, b, c, centroid) {
 }
 
 /**
+ * Orient edges within a chain head-to-tail so consecutive prisms share directed boundary vertices.
+ */
+function orderChainHeadToTail(chainIndices, edges, smoothPartners) {
+  if (chainIndices.length <= 1) {
+    return [{ idx: chainIndices[0], reversed: false }];
+  }
+
+  const inChain = new Set(chainIndices);
+  let startIdx = chainIndices[0];
+  let startReversed = false;
+
+  // Prefer starting at a chain open end (an endpoint that has no smooth partner in this chain)
+  for (const eIdx of chainIndices) {
+    const p1 = smoothPartners.get(`${eIdx}:1`);
+    const p2 = smoothPartners.get(`${eIdx}:2`);
+    if (p1 === undefined || !inChain.has(p1)) {
+      startIdx = eIdx;
+      startReversed = false;
+      break;
+    }
+    if (p2 === undefined || !inChain.has(p2)) {
+      startIdx = eIdx;
+      startReversed = true;
+      break;
+    }
+  }
+
+  const ordered = [];
+  const visited = new Set();
+  let curIdx = startIdx;
+  let curReversed = startReversed;
+
+  while (curIdx !== undefined && !visited.has(curIdx)) {
+    visited.add(curIdx);
+    ordered.push({ idx: curIdx, reversed: curReversed });
+
+    const exitSide = curReversed ? 1 : 2;
+    const nextIdx = smoothPartners.get(`${curIdx}:${exitSide}`);
+    if (nextIdx === undefined || !inChain.has(nextIdx) || visited.has(nextIdx)) {
+      break;
+    }
+
+    const exitVi = exitSide === 1 ? edges[curIdx].vi1 : edges[curIdx].vi2;
+    const nextSide = edges[nextIdx].vi1 === exitVi ? 1 : 2;
+    const nextReversed = (nextSide === 2);
+
+    curIdx = nextIdx;
+    curReversed = nextReversed;
+  }
+
+  for (const idx of chainIndices) {
+    if (!visited.has(idx)) ordered.push({ idx, reversed: false });
+  }
+
+  return ordered;
+}
+
+/**
  * Group connected edges into smooth chains and record non-smooth endpoint vertices per chain.
  */
 function groupSmoothChains(edges, baseFrames, smoothPartners) {
   const edgeToChain = new Map();
-  const chains = [];
+  const rawChains = [];
 
   for (let idx = 0; idx < edges.length; idx++) {
     if (edgeToChain.has(idx) || !baseFrames[idx]) continue;
     const chain = [idx];
-    edgeToChain.set(idx, chains.length);
+    edgeToChain.set(idx, rawChains.length);
     const queue = [idx];
 
     while (queue.length > 0) {
@@ -517,18 +575,21 @@ function groupSmoothChains(edges, baseFrames, smoothPartners) {
       for (const endSide of [1, 2]) {
         const pIdx = smoothPartners.get(`${curIdx}:${endSide}`);
         if (pIdx !== undefined && !edgeToChain.has(pIdx) && baseFrames[pIdx]) {
-          edgeToChain.set(pIdx, chains.length);
+          edgeToChain.set(pIdx, rawChains.length);
           chain.push(pIdx);
           queue.push(pIdx);
         }
       }
     }
-    chains.push(chain);
+    rawChains.push(chain);
   }
+
+  const chains = rawChains.map((cIndices) => orderChainHeadToTail(cIndices, edges, smoothPartners));
 
   const cornerVertsPerChain = chains.map((chain) => {
     const verts = new Set();
-    for (const idx of chain) {
+    for (const item of chain) {
+      const idx = item.idx;
       const e = edges[idx];
       for (const [endSide, vi] of [[1, e.vi1], [2, e.vi2]]) {
         if (!smoothPartners.has(`${idx}:${endSide}`)) {
@@ -566,12 +627,27 @@ function trimSectionToWalls(points, anchorPt, slideDir, wallNormals, maxSlide) {
 /**
  * Append a closed, outward-oriented prism for one edge to `cutterPositions`.
  */
-function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, apexSign, cutterPositions) {
+function buildEdgeCuttingPrism(
+  edge,
+  idx,
+  reversed,
+  frame,
+  endpointFrames,
+  width,
+  segments,
+  profile,
+  apexSign,
+  cutterPositions
+) {
+  const epEntry = endpointFrames.get(`${idx}:${reversed ? 2 : 1}`);
+  const epExit = endpointFrames.get(`${idx}:${reversed ? 1 : 2}`);
+  if (!epEntry || !epExit) return;
+
   const isConvex = edge.isConvex !== false;
 
   let ext1 = 0;
-  if (!ep1.smooth) {
-    if (ep1.blocked) {
+  if (!epEntry.smooth) {
+    if (epEntry.blocked) {
       ext1 = 0;
     } else if (isConvex) {
       ext1 = Math.min(width * 0.5, frame.edgeLen * 0.45);
@@ -579,45 +655,65 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
   }
 
   let ext2 = 0;
-  if (!ep2.smooth) {
-    if (ep2.blocked) {
+  if (!epExit.smooth) {
+    if (epExit.blocked) {
       ext2 = 0;
     } else if (isConvex) {
       ext2 = Math.min(width * 0.5, frame.edgeLen * 0.45);
     }
   }
 
-  const p1 = ext1 > 0 ? edge.v1.clone().addScaledVector(frame.edgeDir, -ext1) : edge.v1;
-  const p2 = ext2 > 0 ? edge.v2.clone().addScaledVector(frame.edgeDir, ext2) : edge.v2;
+  const dir = reversed ? frame.edgeDir.clone().negate() : frame.edgeDir;
+  const startPt = reversed ? edge.v2 : edge.v1;
+  const endPt = reversed ? edge.v1 : edge.v2;
+
+  const p1 = ext1 > 0 ? startPt.clone().addScaledVector(dir, -ext1) : startPt;
+  const p2 = ext2 > 0 ? endPt.clone().addScaledVector(dir, ext2) : endPt;
+
+  const cn1 = epEntry.cn;
+  const cn2 = epExit.cn;
+  const trans1 = new THREE.Vector3().crossVectors(dir, cn1).normalize();
+  const trans2 = new THREE.Vector3().crossVectors(dir, cn2).normalize();
+
+  let inLeft1 = epEntry.i1, inRight1 = epEntry.i2;
+  if (inLeft1.dot(trans1) > inRight1.dot(trans1)) {
+    inLeft1 = epEntry.i2;
+    inRight1 = epEntry.i1;
+  }
+  let inLeft2 = epExit.i1, inRight2 = epExit.i2;
+  if (inLeft2.dot(trans2) > inRight2.dot(trans2)) {
+    inLeft2 = epExit.i2;
+    inRight2 = epExit.i1;
+  }
 
   const arc1 = [];
   for (let s = 0; s <= segments; s++) {
     const t = s / segments;
-    const off = computeProfileOffset(ep1.i1, ep1.i2, t, profile, segments);
+    const off = computeProfileOffset(inLeft1, inRight1, t, profile, segments);
     arc1.push(p1.clone().addScaledVector(off, width));
   }
   const arc2 = [];
   for (let s = 0; s <= segments; s++) {
     const t = s / segments;
-    const off = computeProfileOffset(ep2.i1, ep2.i2, t, profile, segments);
+    const off = computeProfileOffset(inLeft2, inRight2, t, profile, segments);
     arc2.push(p2.clone().addScaledVector(off, width));
   }
 
-  const apex1 = p1.clone().addScaledVector(ep1.cn, width * apexSign);
-  const apex2 = p2.clone().addScaledVector(ep2.cn, width * apexSign);
+  const apex1 = p1.clone().addScaledVector(cn1, width * apexSign);
+  const apex2 = p2.clone().addScaledVector(cn2, width * apexSign);
 
   // Trim concave non-smooth end-caps flush against adjacent outer walls so additions never poke into air
   if (!isConvex) {
     const maxSlide = frame.edgeLen * 0.45;
-    if (!ep1.smooth) {
-      trimSectionToWalls([...arc1, apex1], edge.v1, frame.edgeDir, ep1.wallNormals, maxSlide);
+    if (!epEntry.smooth) {
+      trimSectionToWalls([...arc1, apex1], startPt, dir, epEntry.wallNormals, maxSlide);
     }
-    if (!ep2.smooth) {
+    if (!epExit.smooth) {
       trimSectionToWalls(
         [...arc2, apex2],
-        edge.v2,
-        frame.edgeDir.clone().negate(),
-        ep2.wallNormals,
+        endPt,
+        dir.clone().negate(),
+        epExit.wallNormals,
         maxSlide
       );
     }
@@ -627,25 +723,25 @@ function buildEdgeCuttingPrism(edge, frame, ep1, ep2, width, segments, profile, 
     cutterPositions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
   }
 
-  // Endcap 1 (at p1)
-  if (!ep1.smooth) {
+  // Endcap 1 (at entry)
+  if (!epEntry.smooth) {
     for (let s = 0; s < segments; s++) {
       pushTri(apex1, arc1[s], arc1[s + 1]);
     }
   }
 
-  // Endcap 2 (at p2)
-  if (!ep2.smooth) {
+  // Endcap 2 (at exit)
+  if (!epExit.smooth) {
     for (let s = 0; s < segments; s++) {
       pushTri(apex2, arc2[s + 1], arc2[s]);
     }
   }
 
-  // Side 1: apex to arc[0]
+  // Side 1: Left wall
   pushTri(arc1[0], apex1, apex2);
   pushTri(arc1[0], apex2, arc2[0]);
 
-  // Side 2: arc[last] to apex
+  // Side 2: Right wall
   const last = segments;
   pushTri(apex1, arc1[last], arc2[last]);
   pushTri(apex1, arc2[last], apex2);
@@ -673,9 +769,15 @@ function scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, e
   const order = chains.map((_, cIdx) => cIdx);
   order.sort((a, b) => {
     let lenA = 0;
-    for (const idx of chains[a]) lenA += edgePositions[idx].length;
+    for (const item of chains[a]) {
+      const pos = edgePositions[item.idx];
+      if (pos) lenA += pos.length;
+    }
     let lenB = 0;
-    for (const idx of chains[b]) lenB += edgePositions[idx].length;
+    for (const item of chains[b]) {
+      const pos = edgePositions[item.idx];
+      if (pos) lenB += pos.length;
+    }
     return lenB - lenA;
   });
 
@@ -706,7 +808,11 @@ function scheduleNonOverlappingPasses(chains, chainBoxes, cornerVertsPerChain, e
 
   return passes.map((chainList) => {
     const edgeIndices = [];
-    for (const cIdx of chainList) edgeIndices.push(...chains[cIdx]);
+    for (const cIdx of chainList) {
+      for (const item of chains[cIdx]) {
+        edgeIndices.push(item.idx);
+      }
+    }
     return { edgeIndices, chainList };
   });
 }
@@ -779,25 +885,26 @@ export function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation,
   if (chains.length === 0) return [];
 
   const edgePositions = new Array(groupEdges.length).fill(null);
-  for (let idx = 0; idx < groupEdges.length; idx++) {
-    const frame = baseFrames[idx];
-    const ep1 = endpointFrames.get(`${idx}:1`);
-    const ep2 = endpointFrames.get(`${idx}:2`);
-    if (!frame || !ep1 || !ep2) continue;
+  for (const chain of chains) {
+    for (const { idx, reversed } of chain) {
+      const frame = baseFrames[idx];
+      if (!frame) continue;
 
-    const pos = [];
-    buildEdgeCuttingPrism(
-      groupEdges[idx],
-      frame,
-      ep1,
-      ep2,
-      width,
-      segments,
-      profile,
-      apexSign,
-      pos
-    );
-    edgePositions[idx] = pos;
+      const pos = [];
+      buildEdgeCuttingPrism(
+        groupEdges[idx],
+        idx,
+        reversed,
+        frame,
+        endpointFrames,
+        width,
+        segments,
+        profile,
+        apexSign,
+        pos
+      );
+      edgePositions[idx] = pos;
+    }
   }
 
   const chainBoxes = chains.map((chain) => {
@@ -805,8 +912,8 @@ export function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation,
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     let hasPoints = false;
 
-    for (const idx of chain) {
-      const pos = edgePositions[idx];
+    for (const item of chain) {
+      const pos = edgePositions[item.idx];
       if (!pos) continue;
       for (let i = 0; i < pos.length; i += 3) {
         const px = pos[i], py = pos[i + 1], pz = pos[i + 2];
@@ -853,15 +960,15 @@ export function prepareEdgeGroupBatches(groupEdges, edgeData, params, operation,
     const chainPositionsList = [];
     for (const cIdx of pass.chainList) {
       let cFloats = 0;
-      for (const idx of chains[cIdx]) {
-        const pos = edgePositions[idx];
+      for (const item of chains[cIdx]) {
+        const pos = edgePositions[item.idx];
         if (pos) cFloats += pos.length;
       }
       if (cFloats === 0) continue;
       const cPos = new Float32Array(cFloats);
       let pIdx = 0;
-      for (const idx of chains[cIdx]) {
-        const pos = edgePositions[idx];
+      for (const item of chains[cIdx]) {
+        const pos = edgePositions[item.idx];
         if (pos && pos.length > 0) {
           cPos.set(pos, pIdx);
           pIdx += pos.length;
