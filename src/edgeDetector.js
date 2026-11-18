@@ -657,6 +657,8 @@ function buildSurfaces(faces, faceNormals, edgeAdjacency, sharpEdges, thresholdR
 
   for (let f = 0; f < nFaces; f++) {
     if (faceToSurface[f] >= 0) continue;
+    const [a, b, c] = faces[f];
+    if (a === b || b === c || c === a || !faceNormals[f] || faceNormals[f].lengthSq() < 0.5) continue;
     const sId = surfaces.length;
     const queue = [f];
     faceToSurface[f] = sId;
@@ -842,6 +844,7 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
 
   for (let f = 0; f < faces.length; f++) {
     const [a, b, c] = faces[f];
+    if (a === b || b === c || c === a || faceNormals[f].lengthSq() < 0.5) continue;
     for (const [va, vb] of [
       [a, b],
       [b, c],
@@ -856,7 +859,7 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
   edgeData.adjacency = edgeAdjacency;
 
   // ---- 5. Find sharp edges by dihedral angle ----
-  const thresholdRad = (angleThresholdDeg * Math.PI) / 180;
+  const thresholdRad = Math.max(1e-4, (angleThresholdDeg * Math.PI) / 180 - 1e-5);
   const sharpEdges = [];
 
   for (const [key, faceList] of edgeAdjacency) {
@@ -1101,6 +1104,7 @@ export function autoDetectAngleThreshold(geometryOrEdgeData, options = {}) {
     const edgeAdjacency = new Map();
     for (let f = 0; f < faces.length; f++) {
       const [a, b, c] = faces[f];
+      if (a === b || b === c || c === a || faceNormals[f].lengthSq() < 0.5) continue;
       for (const [va, vb] of [[a, b], [b, c], [c, a]]) {
         const k = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
         if (!edgeAdjacency.has(k)) edgeAdjacency.set(k, []);

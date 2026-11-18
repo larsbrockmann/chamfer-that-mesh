@@ -154,6 +154,7 @@ async function validateModel(model) {
       profile: 'chamfer',
     });
     const after = analyzeMesh(outGeometry);
+    const postEdges = detectEdges(outGeometry, optAngle, { convexOnly: true });
     const outTris = Math.round(getTriangleCount(outGeometry));
     const elapsedMs = Date.now() - startMs;
 
@@ -161,7 +162,9 @@ async function validateModel(model) {
       after.isWatertight === true &&
       after.openEdges === 0 &&
       after.nonManifoldEdges === 0 &&
-      after.issueCount === 0;
+      after.issueCount === 0 &&
+      postEdges.sharpEdges.length > 0 &&
+      postEdges.surfaces.length > 0;
 
     return {
       name: model.name,
@@ -180,7 +183,7 @@ async function validateModel(model) {
       ok,
       error: ok
         ? null
-        : `watertight=${after.isWatertight}, open=${after.openEdges}, nonManifold=${after.nonManifoldEdges}, issues=${after.issueCount}`,
+        : `watertight=${after.isWatertight}, open=${after.openEdges}, nonManifold=${after.nonManifoldEdges}, issues=${after.issueCount}, postEdges=${postEdges.sharpEdges.length}, postSurfs=${postEdges.surfaces.length}`,
     };
   } catch (err) {
     return {

@@ -505,11 +505,11 @@ export function buildUI(callbacks) {
   modeRow.appendChild(modeGroup);
   edgeSection.appendChild(modeRow);
 
-  const helpHint = el(
-    'div',
-    'selection-hint',
-    '💡 Click edges or faces in 3D viewport to toggle. Modes: L (Loop), S (Single), F (Face). Shortcuts: A (All), C (Clear), I (Invert), H (Horizontal), V (Vertical), T (Top/Bottom).'
-  );
+  const helpHint = el('div', 'selection-hint');
+  helpHint.innerHTML =
+    '💡 Click edges or faces in 3D viewport to toggle.<br>' +
+    'Modes: <kbd>L</kbd> Loop · <kbd>S</kbd> Single · <kbd>F</kbd> Face &nbsp;|&nbsp; ' +
+    'Select: <kbd>A</kbd> All · <kbd>C</kbd> Clear · <kbd>I</kbd> Invert · <kbd>H</kbd> Horiz · <kbd>V</kbd> Vert · <kbd>T</kbd> Top/Bot';
   edgeSection.appendChild(helpHint);
 
   // Color legend
@@ -855,6 +855,82 @@ export function buildUI(callbacks) {
   `;
   sidebar.appendChild(infoSection);
 
+  // ============ KEYBOARD & MOUSE SHORTCUTS section ============
+  const SHORTCUT_ENTRIES = [
+    ['<kbd>L</kbd> <kbd>S</kbd> <kbd>F</kbd>', 'Loop / Single / Face mode'],
+    ['<kbd>A</kbd> <kbd>C</kbd> <kbd>I</kbd>', 'Select All / Clear / Invert'],
+    ['<kbd>H</kbd> <kbd>V</kbd> <kbd>T</kbd>', 'Horiz / Vert / Top & Bottom'],
+    ['<kbd>Ctrl+Z</kbd> <kbd>Y</kbd>', 'Undo / Redo (Shift+Z)'],
+    ['<kbd>Esc</kbd>', 'Stop active operation'],
+    ['<kbd>?</kbd>', 'Toggle viewport shortcuts'],
+    ['<kbd>L-Drag</kbd> / <kbd>R-Drag</kbd>', 'Orbit / Pan camera'],
+    ['<kbd>Scroll</kbd>', 'Zoom in & out'],
+  ];
+
+  function createShortcutsGrid() {
+    const grid = el('div', 'shortcuts-grid');
+    grid.innerHTML = SHORTCUT_ENTRIES.map(
+      ([keys, desc]) =>
+        `<div class="shortcut-item"><div class="shortcut-keys">${keys}</div><div class="shortcut-desc">${desc}</div></div>`
+    ).join('');
+    return grid;
+  }
+
+  const shortcutsSection = section('Keyboard & Mouse Shortcuts');
+  shortcutsSection.appendChild(createShortcutsGrid());
+  sidebar.appendChild(shortcutsSection);
+
+  // Floating viewport shortcut pill + expandable cheatsheet popover
+  let shortcutsPopover = document.getElementById('viewport-shortcuts-popover');
+  let shortcutsBar = document.getElementById('viewport-shortcuts-bar');
+  const viewportHost = document.getElementById('viewport');
+  if (viewportHost && !document.getElementById('viewport-shortcuts-widget')) {
+    const widget = el('div', 'viewport-shortcuts-widget');
+    widget.id = 'viewport-shortcuts-widget';
+
+    shortcutsPopover = el('div', 'viewport-shortcuts-popover');
+    shortcutsPopover.id = 'viewport-shortcuts-popover';
+    shortcutsPopover.setAttribute('role', 'dialog');
+    shortcutsPopover.setAttribute('aria-label', 'Keyboard and mouse shortcuts');
+
+    const popHeader = el('div', 'viewport-shortcuts-header');
+    popHeader.appendChild(el('span', '', 'Keyboard & Mouse Shortcuts'));
+    const closeBtn = button('×', 'viewport-shortcuts-close');
+    closeBtn.setAttribute('aria-label', 'Close shortcuts');
+    closeBtn.addEventListener('click', () => toggleShortcutsPopover(false));
+    popHeader.appendChild(closeBtn);
+    shortcutsPopover.appendChild(popHeader);
+    shortcutsPopover.appendChild(createShortcutsGrid());
+
+    shortcutsBar = document.createElement('button');
+    shortcutsBar.type = 'button';
+    shortcutsBar.id = 'viewport-shortcuts-bar';
+    shortcutsBar.className = 'viewport-shortcuts-bar';
+    shortcutsBar.setAttribute('aria-expanded', 'false');
+    shortcutsBar.setAttribute('aria-controls', 'viewport-shortcuts-popover');
+    shortcutsBar.title = 'Click or press ? to view all keyboard and mouse shortcuts';
+    shortcutsBar.innerHTML =
+      '⌨ Shortcuts: <kbd>L</kbd><kbd>S</kbd><kbd>F</kbd> Mode · <kbd>A</kbd><kbd>C</kbd><kbd>I</kbd> Select · <kbd>H</kbd><kbd>V</kbd><kbd>T</kbd> Axis · <kbd>Ctrl+Z</kbd>/<kbd>Y</kbd> Undo · <kbd>?</kbd>';
+    shortcutsBar.addEventListener('click', () => toggleShortcutsPopover());
+
+    widget.appendChild(shortcutsPopover);
+    widget.appendChild(shortcutsBar);
+    viewportHost.appendChild(widget);
+  }
+
+  function toggleShortcutsPopover(forceOpen) {
+    if (!shortcutsPopover) return false;
+    const isOpen =
+      typeof forceOpen === 'boolean'
+        ? forceOpen
+        : !shortcutsPopover.classList.contains('open');
+    shortcutsPopover.classList.toggle('open', isOpen);
+    if (shortcutsBar) {
+      shortcutsBar.setAttribute('aria-expanded', String(isOpen));
+    }
+    return isOpen;
+  }
+
   // ---- Public helpers ----
   function setWidth(val, maxVal = 1.0) {
     const v = parseFloat(val);
@@ -884,7 +960,15 @@ export function buildUI(callbacks) {
     angleValue.textContent = `${val}°`;
   }
 
-  return { updateInfo, fileInput, setWidth, setUndoRedoState, setAngle, setSelectionMode };
+  return {
+    updateInfo,
+    fileInput,
+    setWidth,
+    setUndoRedoState,
+    setAngle,
+    setSelectionMode,
+    toggleShortcutsPopover,
+  };
 }
 
 /**

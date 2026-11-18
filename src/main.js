@@ -193,7 +193,7 @@ initScene();
 
 const canvas = document.getElementById('canvas');
 
-const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode } = buildUI({
+const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShortcutsPopover } = buildUI({
   onImport: () => {},
   onLoadSample: (url) => {
     loadFromUrl(url, onModelLoaded, onModelLoadError);
@@ -1547,9 +1547,13 @@ animate();
 
 // ---- Keyboard shortcuts (Esc: Stop, Ctrl+Z: Undo, Ctrl+Y / Ctrl+Shift+Z: Redo) ----
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && isProcessingMesh) {
-    e.preventDefault();
-    handleStopProcessing();
+  if (e.key === 'Escape') {
+    if (isProcessingMesh) {
+      e.preventDefault();
+      handleStopProcessing();
+      return;
+    }
+    toggleShortcutsPopover(false);
     return;
   }
 
@@ -1576,7 +1580,10 @@ window.addEventListener('keydown', (e) => {
     showToast('Selected all edges (Ctrl+A)', 'is-selected');
   } else if (!modifier && !e.altKey) {
     const k = e.key.toLowerCase();
-    if (k === 'a') {
+    if (e.key === '?') {
+      e.preventDefault();
+      toggleShortcutsPopover();
+    } else if (k === 'a') {
       e.preventDefault();
       handleSelectAll();
       showToast('Selected all edges (A)', 'is-selected');

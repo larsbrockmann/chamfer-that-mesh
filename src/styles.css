@@ -793,6 +793,140 @@ button:disabled {
   flex-shrink: 0;
 }
 
+/* ---- Keyboard & Shortcut Keycaps ---- */
+kbd {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: rgba(16, 16, 30, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom-width: 2px;
+  vertical-align: baseline;
+}
+
+/* ---- Sidebar Shortcuts Reference Grid ---- */
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.shortcut-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 7px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.shortcut-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.shortcut-desc {
+  font-size: 0.69rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
+
+/* ---- Floating Viewport Shortcuts Pill & Cheatsheet ---- */
+.viewport-shortcuts-widget {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100% - 28px);
+}
+
+.viewport-shortcuts-bar {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(22, 22, 34, 0.84);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.viewport-shortcuts-bar:hover,
+.viewport-shortcuts-bar:focus-visible {
+  border-color: rgba(0, 212, 255, 0.55);
+  color: var(--text-primary);
+  background: rgba(26, 26, 44, 0.94);
+  outline: none;
+}
+
+.viewport-shortcuts-popover {
+  width: min(360px, calc(100vw - 28px));
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(22, 22, 36, 0.94);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.viewport-shortcuts-popover.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.viewport-shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.viewport-shortcuts-close {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.viewport-shortcuts-close:hover {
+  color: var(--text-primary);
+  border-color: rgba(0, 212, 255, 0.45);
+}
+
 .badge-dot.dot-selected {
   background: #00d4ff;
   box-shadow: 0 0 8px #00d4ff;
@@ -1318,6 +1452,10 @@ button.is-busy {
     max-width: calc(100vw - 20px);
     padding: 5px 12px;
     font-size: 0.74rem;
+  }
+
+  .viewport-shortcuts-widget {
+    display: none;
   }
 }
 
