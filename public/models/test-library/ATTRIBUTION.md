@@ -1,0 +1,21 @@
+# Test Library Attribution & Metadata
+
+All models in this directory are sharp-featured or complex meshes used to validate edge detection and chamfering, including built-in repository samples and permissive open-source designs sourced from Printables allowing redistribution and modification.
+
+| File | Original Title | Author | License | Dimensions (mm) | Triangles | Convex Edges | Source |
+|---|---|---|---|---|---:|---:|---|
+| `metabo_base.3mf` | Metabo Base (Complex 3MF) | Repository sample | MIT (Repository) | 85.0 × 70.0 × 6.8 | 4360 | 1710 | Local 3MF test fixture |
+| `pcb_mount.stl` | PCB mount | Lars Christian Nygård | Creative Commons — Attribution | 48.2 × 50.5 × 9.1 | 2972 | 1110 | [Printables #300894](https://www.printables.com/model/300894-pcb-mount) |
+| `microfit_panel_mount.stl` | Library for mounting Molex MicroFit 3.0 panel-mount plugs | Wireheadarts | Creative Commons — Attribution  — Share Alike | 15.5 × 50.0 × 16.0 | 188 | 119 | [Printables #1300761](https://www.printables.com/model/1300761-openscad-library-for-mounting-molex-microfit-30-pa) |
+| `klipper_expander_2020_mount.stl` | Klipper Expander Mount for 2020 Extrusion | socketwench | Creative Commons — Attribution | 105.0 × 29.0 × 11.0 | 1516 | 486 | [Printables #525817](https://www.printables.com/model/525817-klipper-expander-mount-for-2020-extrusion-openscad) |
+| `iec320_c14_panel_insert.stl` | IEC320 C14 clip-in insert shape | avolkov | Creative Commons — Attribution  — Share Alike | 2.0 × 61.1 × 40.1 | 448 | 218 | [Printables #82286](https://www.printables.com/model/82286-iec320-c14-openscad-clip-in-insert-shape) |
+| `parametric_cable_clip.stl` | Parametric Cable Clip | MeltinPlastic | Creative Commons — Attribution | 29.0 × 16.0 × 13.0 | 1256 | 240 | [Printables #293944](https://www.printables.com/model/293944-parametric-cable-clip-in-openscad) |
+| `nail_cable_clip.stl` | Customizable Cable Clip | SERVOPUNK | Creative Commons — Attribution  — Share Alike | 10.5 × 5.0 × 5.5 | 312 | 159 | [Printables #945984](https://www.printables.com/model/945984-customizable-cable-clip-in-openscad) |
+| `desk_cable_clip.stl` | Parametric cable clip | DP design | Creative Commons — Attribution | 17.9 × 16.5 × 8.0 | 992 | 503 | [Printables #353354](https://www.printables.com/model/353354-parametric-cable-clip-openscad) |
+| `remote_wall_mount.stl` | Wall mounts for air conditioner, ceiling fan remotes (parametric) | Parsingphase | Creative Commons — Attribution  — Share Alike | 55.0 × 31.0 × 75.0 | 604 | 302 | [Printables #499313](https://www.printables.com/model/499313-wall-mounts-for-air-conditioner-ceiling-fan-remote) |
+| `parametric_washer_spacer.stl` | Simple washer or spacer | Starwhooper | Creative Commons — Attribution  — Share Alike | 16.0 × 16.0 × 3.0 | 256 | 128 | [Printables #353643](https://www.printables.com/model/353643-openscad-simple-washer-or-spacer) |
+| `jointmaster_spacer.stl` | Milescraft JointMaster Spacers - Parametric | LoneStarPrints | Creative Commons — Attribution | 54.0 × 17.5 × 8.7 | 492 | 132 | [Printables #1569560](https://www.printables.com/model/1569560-milescraft-jointmaster-spacers-parametric-openscad) |
+| `s_hook.stl` | Customisable S-hooks | Cantareus | Creative Commons — Attribution  — Share Alike | 52.0 × 32.0 × 4.0 | 1020 | 511 | [Printables #206841](https://www.printables.com/model/206841-customisable-openscad-s-hooks) |
+| `skadis_t_nut_m3.stl` | Skadis T-Nut, M2, M2.5, M3, Heat Insert | Ofilant | Creative Commons — Attribution  — Share Alike | 4.8 × 12.0 × 8.0 | 848 | 278 | [Printables #637691](https://www.printables.com/model/637691-skadis-t-nut-openscad-m2-m25-m3-heat-insert) |
+| `hsw_box_holder_frame.stl` | HSW parametric box holder frame | GetBurning | GNU General Public License v3.0 | 137.0 × 65.0 × 24.5 | 1800 | 820 | [Printables #673945](https://www.printables.com/model/673945-hsw-parametric-box-holder-frame-openscad) |
+| `gridfinity_ruler_holder.stl` | Gridfinity ruler holder | Technobug | Creative Commons — Attribution  — Share Alike | 41.5 × 125.5 × 26.7 | 2030 | 592 | [Printables #989045](https://www.printables.com/model/989045-gridfinity-ruler-holder-with-openscad-file) |

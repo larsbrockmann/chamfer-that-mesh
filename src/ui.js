@@ -239,23 +239,23 @@ export function buildUI(callbacks) {
       <option value="./models/stepped_pyramid.stl">Pyramid (Stepped)</option>
       <option value="./models/hex_nut.stl" selected>Hex Nut</option>
       <option value="./models/spur_gear.stl">Tooth Gear</option>
-      <option value="./models/metabo_base.3mf">Metabo Base (Complex 3MF)</option>
     </optgroup>
-    <optgroup label="OpenSCAD Test Library (Printables)">
-      <option value="./models/openscad/pcb_mount.stl">PCB Mount (OpenSCAD)</option>
-      <option value="./models/openscad/microfit_panel_mount.stl">MicroFit 3.0 Panel Mount</option>
-      <option value="./models/openscad/klipper_expander_2020_mount.stl">Klipper Expander 2020 Mount</option>
-      <option value="./models/openscad/iec320_c14_panel_insert.stl">IEC320 C14 Panel Insert</option>
-      <option value="./models/openscad/parametric_cable_clip.stl">Parametric Cable Clip</option>
-      <option value="./models/openscad/nail_cable_clip.stl">Nail Cable Clip (4mm)</option>
-      <option value="./models/openscad/desk_cable_clip.stl">Desk Cable Clip</option>
-      <option value="./models/openscad/remote_wall_mount.stl">Remote Wall Mount (OpenSCAD)</option>
-      <option value="./models/openscad/parametric_washer_spacer.stl">Washer / Spacer (16x6x3)</option>
-      <option value="./models/openscad/jointmaster_spacer.stl">JointMaster 5/16 Spacer</option>
-      <option value="./models/openscad/openscad_s_hook.stl">OpenSCAD S-Hook</option>
-      <option value="./models/openscad/skadis_t_nut_m3.stl">Skadis M3 T-Nut Insert</option>
-      <option value="./models/openscad/hsw_box_holder_frame.stl">HSW Box Holder Frame</option>
-      <option value="./models/openscad/gridfinity_ruler_holder.stl">Gridfinity Ruler Holder</option>
+    <optgroup label="Test Library">
+      <option value="./models/test-library/metabo_base.3mf">Metabo Base (Complex 3MF)</option>
+      <option value="./models/test-library/pcb_mount.stl">PCB Mount</option>
+      <option value="./models/test-library/microfit_panel_mount.stl">MicroFit 3.0 Panel Mount</option>
+      <option value="./models/test-library/klipper_expander_2020_mount.stl">Klipper Expander 2020 Mount</option>
+      <option value="./models/test-library/iec320_c14_panel_insert.stl">IEC320 C14 Panel Insert</option>
+      <option value="./models/test-library/parametric_cable_clip.stl">Parametric Cable Clip</option>
+      <option value="./models/test-library/nail_cable_clip.stl">Nail Cable Clip (4mm)</option>
+      <option value="./models/test-library/desk_cable_clip.stl">Desk Cable Clip</option>
+      <option value="./models/test-library/remote_wall_mount.stl">Remote Wall Mount</option>
+      <option value="./models/test-library/parametric_washer_spacer.stl">Washer / Spacer (16x6x3)</option>
+      <option value="./models/test-library/jointmaster_spacer.stl">JointMaster 5/16 Spacer</option>
+      <option value="./models/test-library/s_hook.stl">S-Hook</option>
+      <option value="./models/test-library/skadis_t_nut_m3.stl">Skadis M3 T-Nut Insert</option>
+      <option value="./models/test-library/hsw_box_holder_frame.stl">HSW Box Holder Frame</option>
+      <option value="./models/test-library/gridfinity_ruler_holder.stl">Gridfinity Ruler Holder</option>
     </optgroup>
   `;
   sampleSelect.addEventListener('change', (e) => {

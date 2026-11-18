@@ -1,22 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { unzipSync, strFromU8 } from 'three/examples/jsm/libs/fflate.module.js';
 import { detectEdges, autoDetectAngleThreshold } from '../src/edgeDetector.js';
 import { applyChamferAsync } from '../src/chamferEngine.js';
 import { analyzeMesh } from '../src/meshFixer.js';
+import { get3MFUnitScale } from '../src/loaders.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const MODELS_DIR = path.join(ROOT_DIR, 'public', 'models');
-const OPENSCAD_DIR = path.join(MODELS_DIR, 'openscad');
-const MANIFEST_PATH = path.join(OPENSCAD_DIR, 'manifest.json');
+const TEST_LIBRARY_DIR = path.join(MODELS_DIR, 'test-library');
+const MANIFEST_PATH = path.join(TEST_LIBRARY_DIR, 'manifest.json');
 
 /**
- * Load a binary or ASCII STL file from disk into a THREE.BufferGeometry.
+ * Load an ASCII or binary STL file from disk into a THREE.BufferGeometry.
  * @param {string} filePath
- * @returns {import('three').BufferGeometry}
+ * @returns {THREE.BufferGeometry}
  */
 function loadStlGeometry(filePath) {
   const buf = fs.readFileSync(filePath);
@@ -25,7 +28,67 @@ function loadStlGeometry(filePath) {
 }
 
 /**
- * Collect the built-in STL demo models and the downloaded Printables OpenSCAD models.
+ * Load a 3MF file from disk in Node.js by parsing `.model` XML meshes and unit scale.
+ * @param {string} filePath
+ * @returns {THREE.BufferGeometry}
+ */
+function load3mfGeometry(filePath) {
+  const buf = fs.readFileSync(filePath);
+  const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  const unitScale = get3MFUnitScale(arrayBuffer);
+  const zip = unzipSync(new Uint8Array(arrayBuffer));
+  const positions = [];
+
+  for (const [entryName, data] of Object.entries(zip)) {
+    if (!entryName.endsWith('.model')) continue;
+    const xml = strFromU8(data);
+    for (const meshMatch of xml.matchAll(/<mesh\b[^>]*>([\s\S]*?)<\/mesh>/g)) {
+      const meshXml = meshMatch[1];
+      const verts = [];
+      for (const m of meshXml.matchAll(/<vertex\b[^>]*\bx="([^"]+)"[^>]*\by="([^"]+)"[^>]*\bz="([^"]+)"/g)) {
+        verts.push(
+          parseFloat(m[1]) * unitScale,
+          parseFloat(m[2]) * unitScale,
+          parseFloat(m[3]) * unitScale
+        );
+      }
+      for (const m of meshXml.matchAll(/<triangle\b[^>]*\bv1="(\d+)"[^>]*\bv2="(\d+)"[^>]*\bv3="(\d+)"/g)) {
+        const i1 = parseInt(m[1], 10) * 3;
+        const i2 = parseInt(m[2], 10) * 3;
+        const i3 = parseInt(m[3], 10) * 3;
+        positions.push(
+          verts[i1], verts[i1 + 1], verts[i1 + 2],
+          verts[i2], verts[i2 + 1], verts[i2 + 2],
+          verts[i3], verts[i3 + 1], verts[i3 + 2]
+        );
+      }
+    }
+  }
+
+  if (positions.length === 0) {
+    throw new Error(`No mesh triangles found in 3MF file: ${filePath}`);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * Load either an `.stl` or `.3mf` mesh file from disk into a THREE.BufferGeometry.
+ * @param {string} filePath
+ * @returns {THREE.BufferGeometry}
+ */
+function loadModelGeometry(filePath) {
+  if (filePath.toLowerCase().endsWith('.3mf')) {
+    return load3mfGeometry(filePath);
+  }
+  return loadStlGeometry(filePath);
+}
+
+/**
+ * Collect the built-in STL demo models and all test library models from manifest.json.
  * @returns {Array<{name: string, group: string, filePath: string, meta?: object}>}
  */
 function collectTestModels() {
@@ -43,14 +106,16 @@ function collectTestModels() {
     filePath: path.join(MODELS_DIR, name),
   }));
 
-  const openscadModels = manifest.map((entry) => ({
+  const testLibraryModels = manifest.map((entry) => ({
     name: entry.file,
-    group: `printables-#${entry.printablesId}`,
-    filePath: path.join(OPENSCAD_DIR, entry.file),
+    group: entry.printablesId
+      ? `printables-#${entry.printablesId}`
+      : entry.source || 'test-library',
+    filePath: path.join(TEST_LIBRARY_DIR, entry.file),
     meta: entry,
   }));
 
-  return [...builtinModels, ...openscadModels];
+  return [...builtinModels, ...testLibraryModels];
 }
 
 function getTriangleCount(geometry) {
@@ -58,7 +123,7 @@ function getTriangleCount(geometry) {
 }
 
 /**
- * Pad or truncate a cell string for aligned summary output.
+ * Pad a cell string for aligned summary output.
  */
 function pad(value, width, alignRight = false) {
   const str = String(value);
@@ -68,7 +133,7 @@ function pad(value, width, alignRight = false) {
 
 async function validateModel(model) {
   const startMs = Date.now();
-  const geometry = loadStlGeometry(model.filePath);
+  const geometry = loadModelGeometry(model.filePath);
   let outGeometry = null;
 
   try {
@@ -145,7 +210,7 @@ async function validateModel(model) {
 
 async function main() {
   const models = collectTestModels();
-  console.log(`Validating ${models.length} STL test models (width=0.25, segments=1, profile=chamfer)...\n`);
+  console.log(`Validating ${models.length} test models (width=0.25, segments=1, profile=chamfer)...\n`);
 
   const header = [
     pad('Model', 31),
