@@ -171,8 +171,8 @@ let chamferSegments = 1;
 let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
 let showPreview = false;
 let showEdgeHighlight = true;
-let selectionMode = 'loop'; // 'loop' | 'single' | 'face'
-let loopSelectionMode = true; // synced: true when selectionMode === 'loop'
+let selectionMode = 'smart'; // 'smart' | 'single'
+let loopSelectionMode = true; // synced: true when selectionMode === 'smart'
 let autoFixMesh = false;
 let removeUnconnectedParts = false;
 
@@ -229,8 +229,8 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
   onSelectVertical: handleSelectVertical,
   onSelectTopBottom: handleSelectTopBottom,
   onSelectionModeChange: (mode) => {
-    selectionMode = mode || 'loop';
-    loopSelectionMode = selectionMode === 'loop';
+    selectionMode = mode === 'single' ? 'single' : 'smart';
+    loopSelectionMode = selectionMode === 'smart';
     clearHoverState();
   },
   onProfileChange: (profile, segments) => {
@@ -324,11 +324,7 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
     // Re-detect sharp edges and update preview
     handleDetectEdges();
   },
-  onEdgeHighlightToggle: (v) => {
-    showEdgeHighlight = v;
-    if (edgeLinesObject) edgeLinesObject.visible = v;
-    if (!v) clearHoverState();
-  },
+  onEdgeHighlightToggle: (v) => setOverlaysVisible(v, false),
 });
 
 // ---- Loaders ----
@@ -419,11 +415,21 @@ function handleAutoAngle(silent = false) {
   }
 }
 
+function setOverlaysVisible(visible, announce = false) {
+  const next = !!visible;
+  showEdgeHighlight = next;
+  setEdgeHighlightToggleUI(next);
+  if (edgeLinesObject) edgeLinesObject.visible = next;
+  if (previewGroup) previewGroup.visible = next && showPreview;
+  if (!next) clearHoverState();
+  if (announce) {
+    showToast(next ? 'Overlays visible (O)' : 'Overlays hidden (O)', next ? 'is-selected' : 'is-unselected');
+  }
+}
+
 function ensureEdgeHighlightVisible() {
   if (!showEdgeHighlight) {
-    showEdgeHighlight = true;
-    setEdgeHighlightToggleUI(true);
-    if (edgeLinesObject) edgeLinesObject.visible = true;
+    setOverlaysVisible(true, false);
   }
 }
 
@@ -815,28 +821,17 @@ function getClosestEdge(clientX, clientY, isTouch = false, maxFrontDist = Infini
 
 function resolveViewportTarget(clientX, clientY, isTouch = false) {
   const surfaceHit = getSurfaceHitAtClientPos(clientX, clientY);
-
-  if (selectionMode === 'face') {
-    if (surfaceHit) {
-      return { type: 'face', surfaceId: surfaceHit.surfaceId };
-    }
-    const edgeIdx = getClosestEdge(clientX, clientY, isTouch);
-    if (edgeIdx >= 0) {
-      return { type: 'edge', edgeIdx };
-    }
-    return { type: 'none' };
-  }
-
   const edgeIdx = getClosestEdge(
     clientX,
     clientY,
     isTouch,
     surfaceHit ? surfaceHit.distance : Infinity
   );
+
   if (edgeIdx >= 0) {
     return { type: 'edge', edgeIdx };
   }
-  if (surfaceHit) {
+  if (selectionMode === 'smart' && surfaceHit) {
     return { type: 'face', surfaceId: surfaceHit.surfaceId };
   }
   return { type: 'none' };
@@ -947,7 +942,10 @@ function updatePreview() {
 
   const params = new ChamferParams(chamferWidth, chamferSegments, chamferProfile);
   previewGroup = previewChamfer(currentEdgeData, params);
-  scene.add(previewGroup);
+  if (previewGroup) {
+    previewGroup.visible = showEdgeHighlight && showPreview;
+    scene.add(previewGroup);
+  }
 }
 
 function removePreview() {
@@ -1583,6 +1581,19 @@ window.addEventListener('keydown', (e) => {
     if (e.key === '?') {
       e.preventDefault();
       toggleShortcutsPopover();
+    } else if (k === 'm') {
+      e.preventDefault();
+      const nextMode = selectionMode === 'smart' ? 'single' : 'smart';
+      setSelectionMode(nextMode);
+      showToast(
+        nextMode === 'smart'
+          ? 'Mode: Smart — Edges & Faces (M)'
+          : 'Mode: Single Edge only (M)',
+        'is-selected'
+      );
+    } else if (k === 'o') {
+      e.preventDefault();
+      setOverlaysVisible(!showEdgeHighlight, true);
     } else if (k === 'a') {
       e.preventDefault();
       handleSelectAll();
@@ -1595,27 +1606,6 @@ window.addEventListener('keydown', (e) => {
       e.preventDefault();
       handleSelectInvert();
       showToast('Inverted edge selection (I)', 'is-selected');
-    } else if (k === 'h') {
-      e.preventDefault();
-      handleSelectHorizontal();
-    } else if (k === 'v') {
-      e.preventDefault();
-      handleSelectVertical();
-    } else if (k === 't') {
-      e.preventDefault();
-      handleSelectTopBottom();
-    } else if (k === 'f') {
-      e.preventDefault();
-      setSelectionMode('face');
-      showToast('Click Mode: Face — click any face to toggle its adjacent edges (F)', 'is-selected');
-    } else if (k === 'l') {
-      e.preventDefault();
-      setSelectionMode('loop');
-      showToast('Click Mode: Chain Loop (L)', 'is-selected');
-    } else if (k === 's') {
-      e.preventDefault();
-      setSelectionMode('single');
-      showToast('Click Mode: Single Edge (S)', 'is-selected');
     }
   }
 });

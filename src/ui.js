@@ -443,49 +443,43 @@ export function buildUI(callbacks) {
   const shortcutRow = el('div', 'selection-btn-row');
   shortcutRow.style.marginTop = '4px';
   const horizontalBtn = button('Horizontal', 'btn-secondary btn-small');
-  horizontalBtn.title = 'Select only horizontal edges parallel to ground (Shortcut: H)';
+  horizontalBtn.title = 'Select horizontal edges parallel to ground';
   horizontalBtn.addEventListener('click', () => callbacks.onSelectHorizontal && callbacks.onSelectHorizontal());
   const verticalBtn = button('Vertical', 'btn-secondary btn-small');
-  verticalBtn.title = 'Select only vertical edges perpendicular to ground (Shortcut: V)';
+  verticalBtn.title = 'Select vertical edges perpendicular to ground';
   verticalBtn.addEventListener('click', () => callbacks.onSelectVertical && callbacks.onSelectVertical());
   const topBottomBtn = button('Top / Bottom', 'btn-secondary btn-small');
-  topBottomBtn.title = 'Select only topmost and bottommost edges (Shortcut: T)';
+  topBottomBtn.title = 'Select topmost and bottommost edges';
   topBottomBtn.addEventListener('click', () => callbacks.onSelectTopBottom && callbacks.onSelectTopBottom());
   shortcutRow.appendChild(horizontalBtn);
   shortcutRow.appendChild(verticalBtn);
   shortcutRow.appendChild(topBottomBtn);
   edgeSection.appendChild(shortcutRow);
 
-  // Selection mode: Loop vs Single vs Face
+  // Selection mode: Smart (Edge Loop + Face) vs Single Edge
   const modeRow = el('div', 'control-row');
   modeRow.style.marginTop = '6px';
   const modeLbl = el('span', 'control-label', 'Click Mode');
   const modeGroup = el('div', 'segmented-control click-mode-group');
   modeGroup.id = 'click-mode-group';
 
-  const loopRadio = document.createElement('button');
-  loopRadio.textContent = 'Chain Loop';
-  loopRadio.className = 'segment-btn active';
-  loopRadio.title = 'Click an edge to toggle its connected chain loop (Shortcut: L)';
+  const smartRadio = document.createElement('button');
+  smartRadio.textContent = 'Smart';
+  smartRadio.className = 'segment-btn active';
+  smartRadio.title = 'Click an edge for its chain loop, or click a face for all adjacent edges (Shortcut: M)';
 
   const singleRadio = document.createElement('button');
   singleRadio.textContent = 'Single Edge';
   singleRadio.className = 'segment-btn';
-  singleRadio.title = 'Click an edge to toggle only that single segment (Shortcut: S)';
-
-  const faceRadio = document.createElement('button');
-  faceRadio.textContent = 'Face';
-  faceRadio.className = 'segment-btn';
-  faceRadio.title = 'Click any face to select or deselect all of its adjacent edges (Shortcut: F)';
+  singleRadio.title = 'Precision mode: click individual edge segments only; face picking is off (Shortcut: M)';
 
   const selectionModeBtns = {
-    loop: loopRadio,
+    smart: smartRadio,
     single: singleRadio,
-    face: faceRadio,
   };
 
   function setSelectionMode(mode) {
-    const normalized = selectionModeBtns[mode] ? mode : 'loop';
+    const normalized = selectionModeBtns[mode] ? mode : 'smart';
     for (const [key, btn] of Object.entries(selectionModeBtns)) {
       btn.classList.toggle('active', key === normalized);
     }
@@ -494,22 +488,18 @@ export function buildUI(callbacks) {
     }
   }
 
-  loopRadio.addEventListener('click', () => setSelectionMode('loop'));
+  smartRadio.addEventListener('click', () => setSelectionMode('smart'));
   singleRadio.addEventListener('click', () => setSelectionMode('single'));
-  faceRadio.addEventListener('click', () => setSelectionMode('face'));
 
-  modeGroup.appendChild(loopRadio);
+  modeGroup.appendChild(smartRadio);
   modeGroup.appendChild(singleRadio);
-  modeGroup.appendChild(faceRadio);
   modeRow.appendChild(modeLbl);
   modeRow.appendChild(modeGroup);
   edgeSection.appendChild(modeRow);
 
   const helpHint = el('div', 'selection-hint');
   helpHint.innerHTML =
-    '💡 Click edges or faces in 3D viewport to toggle.<br>' +
-    'Modes: <kbd>L</kbd> Loop · <kbd>S</kbd> Single · <kbd>F</kbd> Face &nbsp;|&nbsp; ' +
-    'Select: <kbd>A</kbd> All · <kbd>C</kbd> Clear · <kbd>I</kbd> Invert · <kbd>H</kbd> Horiz · <kbd>V</kbd> Vert · <kbd>T</kbd> Top/Bot';
+    '💡 <strong>Smart</strong>: click an edge for its loop, or a face for all its edges. Press <kbd>M</kbd> for Single Edge, <kbd>O</kbd> to toggle overlays.';
   edgeSection.appendChild(helpHint);
 
   // Color legend
@@ -811,7 +801,8 @@ export function buildUI(callbacks) {
     );
   viewSection.appendChild(rotCenterToggle);
 
-  const edgeHighlightToggle = toggleRow('Edge Highlight', true);
+  const edgeHighlightToggle = toggleRow('Overlays (O)', true);
+  edgeHighlightToggle.title = 'Toggle edge, face, and preview overlays (Shortcut: O)';
   const edgeHighlightInput = edgeHighlightToggle.querySelector('input');
   edgeHighlightInput.id = 'edge-highlight-checkbox';
   edgeHighlightInput.addEventListener('change', (e) =>
@@ -857,14 +848,12 @@ export function buildUI(callbacks) {
 
   // ============ KEYBOARD & MOUSE SHORTCUTS section ============
   const SHORTCUT_ENTRIES = [
-    ['<kbd>L</kbd> <kbd>S</kbd> <kbd>F</kbd>', 'Loop / Single / Face mode'],
+    ['<kbd>M</kbd>', 'Mode: Smart / Single Edge'],
+    ['<kbd>O</kbd>', 'Toggle Viewport Overlays'],
     ['<kbd>A</kbd> <kbd>C</kbd> <kbd>I</kbd>', 'Select All / Clear / Invert'],
-    ['<kbd>H</kbd> <kbd>V</kbd> <kbd>T</kbd>', 'Horiz / Vert / Top & Bottom'],
-    ['<kbd>Ctrl+Z</kbd> <kbd>Y</kbd>', 'Undo / Redo (Shift+Z)'],
-    ['<kbd>Esc</kbd>', 'Stop active operation'],
-    ['<kbd>?</kbd>', 'Toggle viewport shortcuts'],
-    ['<kbd>L-Drag</kbd> / <kbd>R-Drag</kbd>', 'Orbit / Pan camera'],
-    ['<kbd>Scroll</kbd>', 'Zoom in & out'],
+    ['<kbd>Ctrl+Z</kbd> <kbd>Y</kbd>', 'Undo / Redo'],
+    ['<kbd>L-Drag</kbd> / <kbd>R-Drag</kbd>', 'Orbit / Pan (Scroll Zoom)'],
+    ['<kbd>Esc</kbd> / <kbd>?</kbd>', 'Stop / Shortcuts Help'],
   ];
 
   function createShortcutsGrid() {
@@ -910,7 +899,7 @@ export function buildUI(callbacks) {
     shortcutsBar.setAttribute('aria-controls', 'viewport-shortcuts-popover');
     shortcutsBar.title = 'Click or press ? to view all keyboard and mouse shortcuts';
     shortcutsBar.innerHTML =
-      '⌨ Shortcuts: <kbd>L</kbd><kbd>S</kbd><kbd>F</kbd> Mode · <kbd>A</kbd><kbd>C</kbd><kbd>I</kbd> Select · <kbd>H</kbd><kbd>V</kbd><kbd>T</kbd> Axis · <kbd>Ctrl+Z</kbd>/<kbd>Y</kbd> Undo · <kbd>?</kbd>';
+      '⌨ <kbd>M</kbd> Mode · <kbd>O</kbd> Overlays · <kbd>A</kbd><kbd>C</kbd><kbd>I</kbd> Select · <kbd>Ctrl+Z</kbd> Undo · <kbd>?</kbd>';
     shortcutsBar.addEventListener('click', () => toggleShortcutsPopover());
 
     widget.appendChild(shortcutsPopover);
