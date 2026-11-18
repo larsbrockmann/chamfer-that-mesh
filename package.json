@@ -25,7 +25,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node tests/validate_test_library.mjs"
   },
   "dependencies": {
     "manifold-3d": "^3.5.5",

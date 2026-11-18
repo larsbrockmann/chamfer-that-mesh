@@ -1075,6 +1075,70 @@ export function applyChamfer(geometry, edgeData, params) {
 }
 
 /**
+ * Weld vertices strictly by position across multiple tolerances, drop collapsed triangles,
+ * and build a valid 2-manifold solid for Manifold CSG.
+ */
+function buildManifoldSolid(Manifold, Mesh, geoOrPositions, tolerances = [1e-5, 1e-4]) {
+  const posOnly = new THREE.BufferGeometry();
+  let tempNonIdx = null;
+  if (geoOrPositions instanceof Float32Array) {
+    posOnly.setAttribute('position', new THREE.BufferAttribute(geoOrPositions, 3));
+  } else {
+    const src = geoOrPositions.index ? (tempNonIdx = geoOrPositions.toNonIndexed()) : geoOrPositions;
+    const srcPos = src.getAttribute('position');
+    if (!srcPos || srcPos.count < 9) {
+      if (tempNonIdx) tempNonIdx.dispose();
+      posOnly.dispose();
+      return null;
+    }
+    posOnly.setAttribute('position', srcPos.clone());
+  }
+
+  let result = null;
+  for (const tol of tolerances) {
+    let merged = null;
+    try {
+      merged = BufferGeometryUtils.mergeVertices(posOnly, tol);
+      const posAttr = merged.getAttribute('position');
+      const idxAttr = merged.getIndex();
+      if (!posAttr || !idxAttr) continue;
+
+      const idxArr = idxAttr.array;
+      const cleanIdx = [];
+      for (let i = 0; i < idxArr.length; i += 3) {
+        const a = idxArr[i];
+        const b = idxArr[i + 1];
+        const c = idxArr[i + 2];
+        if (a !== b && b !== c && c !== a) {
+          cleanIdx.push(a, b, c);
+        }
+      }
+      if (cleanIdx.length < 12) continue;
+
+      const mesh = new Mesh({
+        numProp: 3,
+        vertProperties: new Float32Array(posAttr.array),
+        triVerts: new Uint32Array(cleanIdx),
+      });
+      mesh.merge();
+      const mf = new Manifold(mesh);
+      if (mf.status() === 'NoError' && mf.numTri() > 0) {
+        result = mf;
+        break;
+      }
+    } catch (_) {
+      /* Try next weld tolerance */
+    } finally {
+      if (merged) merged.dispose();
+    }
+  }
+
+  if (tempNonIdx) tempNonIdx.dispose();
+  posOnly.dispose();
+  return result;
+}
+
+/**
  * Perform exact, guaranteed 2-manifold CSG using Manifold (C++ WebAssembly).
  * Evaluates in milliseconds and guarantees 100% watertight output with zero open edges.
  *
@@ -1095,32 +1159,17 @@ export async function applyChamferWithManifold(geometry, batches, options = {}) 
   if (!mMod) return null;
   const { Manifold, Mesh } = mMod;
 
-  let mergedBase;
-  try {
-    mergedBase = BufferGeometryUtils.mergeVertices(
-      geometry.index ? geometry : BufferGeometryUtils.mergeVertices(geometry.toNonIndexed(), 1e-4),
-      1e-4
-    );
-  } catch (_) {
+  let curManifold = buildManifoldSolid(Manifold, Mesh, geometry, [1e-5, 1e-4]);
+  if (!curManifold) {
+    console.warn('Base mesh could not be converted to Manifold, falling back to three-bvh-csg');
     return null;
   }
-  const posAttr = mergedBase.getAttribute('position');
-  const idxAttr = mergedBase.getIndex();
-  if (!posAttr || !idxAttr) return null;
 
-  const mBase = new Mesh({
-    numProp: 3,
-    vertProperties: new Float32Array(posAttr.array),
-    triVerts: new Uint32Array(idxAttr.array),
-  });
-  mBase.merge();
-  let curManifold;
+  let initialPartCount = 1;
   try {
-    curManifold = new Manifold(mBase);
-    if (curManifold.status() !== 'NoError') return null;
-  } catch (e) {
-    console.warn('Base mesh could not be converted to Manifold, falling back to three-bvh-csg:', e);
-    return null;
+    initialPartCount = curManifold.decompose().length;
+  } catch (_) {
+    /* ignore decompose count fallback */
   }
 
   for (let bIdx = 0; bIdx < batches.length; bIdx++) {
@@ -1132,34 +1181,12 @@ export async function applyChamferWithManifold(geometry, batches, options = {}) 
     const chainManifolds = [];
     if (batch.chainPositionsList && batch.chainPositionsList.length > 0) {
       for (const cPos of batch.chainPositionsList) {
-        const cGeo = new THREE.BufferGeometry();
-        cGeo.setAttribute('position', new THREE.BufferAttribute(cPos, 3));
-        const merged = BufferGeometryUtils.mergeVertices(cGeo, 1e-4);
-        cGeo.dispose();
-        const m = new Mesh({
-          numProp: 3,
-          vertProperties: new Float32Array(merged.getAttribute('position').array),
-          triVerts: new Uint32Array(merged.getIndex().array),
-        });
-        m.merge();
-        try {
-          chainManifolds.push(new Manifold(m));
-        } catch (_) {}
+        const cm = buildManifoldSolid(Manifold, Mesh, cPos, [1e-4, 1e-5]);
+        if (cm) chainManifolds.push(cm);
       }
     } else if (batch.cutterPositions) {
-      const cGeo = new THREE.BufferGeometry();
-      cGeo.setAttribute('position', new THREE.BufferAttribute(batch.cutterPositions, 3));
-      const merged = BufferGeometryUtils.mergeVertices(cGeo, 1e-4);
-      cGeo.dispose();
-      const m = new Mesh({
-        numProp: 3,
-        vertProperties: new Float32Array(merged.getAttribute('position').array),
-        triVerts: new Uint32Array(merged.getIndex().array),
-      });
-      m.merge();
-      try {
-        chainManifolds.push(new Manifold(m));
-      } catch (_) {}
+      const cm = buildManifoldSolid(Manifold, Mesh, batch.cutterPositions, [1e-4, 1e-5]);
+      if (cm) chainManifolds.push(cm);
     }
 
     if (chainManifolds.length > 0) {
@@ -1180,12 +1207,15 @@ export async function applyChamferWithManifold(geometry, batches, options = {}) 
     /* ignore simplify error if any */
   }
 
-  // Discard any micro-slivers severed by chamfer cuts (< 1% of total volume)
+  // Discard micro-slivers severed by chamfer cuts (<= 1% volume or <= 5% surface area of main solid)
   try {
     const parts = curManifold.decompose();
-    if (parts.length > 1) {
-      const totalVol = Math.abs(curManifold.volume());
-      const mainParts = parts.filter((p) => Math.abs(p.volume()) > totalVol * 0.01);
+    if (parts.length > initialPartCount) {
+      const maxVol = Math.max(...parts.map((p) => Math.abs(p.volume())));
+      const maxArea = Math.max(...parts.map((p) => p.surfaceArea()));
+      const mainParts = parts.filter(
+        (p) => Math.abs(p.volume()) > maxVol * 0.01 && p.surfaceArea() > maxArea * 0.05
+      );
       if (mainParts.length > 0 && mainParts.length < parts.length) {
         curManifold = Manifold.compose(mainParts);
       }
