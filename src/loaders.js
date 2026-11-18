@@ -224,14 +224,14 @@ function mergeGeometriesList(geometries) {
 }
 
 /**
- * Create a Mesh from BufferGeometry: center, auto-scale, compute normals.
+ * Create a Mesh from BufferGeometry: center at geometric center, compute normals.
  */
 function geometryToMesh(geometry) {
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 
-  // Center geometry at origin (keeps 1:1 real-world millimeters)
+  // Center geometry at its bounding-box midpoint (keeps 1:1 real-world millimeters)
   const center = new THREE.Vector3();
   geometry.boundingBox.getCenter(center);
   geometry.translate(-center.x, -center.y, -center.z);

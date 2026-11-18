@@ -10,9 +10,8 @@ import {
   controls,
   setGridVisible,
   setAxesVisible,
-  orbitPivot,
   setOrbitPivot,
-  syncTargetDepthToPoint,
+  setRotationCenterVisible,
 } from './scene.js';
 import { setupLoaders, loadFromUrl } from './loaders.js';
 import { detectEdges, autoDetectAngleThreshold } from './edgeDetector.js';
@@ -281,12 +280,14 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode } = buildUI(
   },
   onGridToggle: setGridVisible,
   onAxesToggle: setAxesVisible,
+  onRotationCenterToggle: setRotationCenterVisible,
   onRecenter: () => {
     if (!currentMesh) return;
     const box = new THREE.Box3().setFromObject(currentMesh);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z, 1.0);
+    camera.up.set(0, 1, 0);
     controls.target.copy(center);
     setOrbitPivot(center, false);
     camera.position.copy(
@@ -317,7 +318,8 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode } = buildUI(
     geo.computeBoundingBox();
     geo.computeBoundingSphere();
 
-    setOrbitPivot(new THREE.Vector3(0, 0, 0), true);
+    controls.target.set(0, 0, 0);
+    setOrbitPivot(new THREE.Vector3(0, 0, 0), false);
 
     // Re-detect sharp edges and update preview
     handleDetectEdges();
@@ -364,7 +366,7 @@ function onModelLoaded(mesh) {
   syncUndoRedoUI();
   scene.add(currentMesh);
 
-  // Focus camera on model
+  // Focus camera on object geometric center
   const box = new THREE.Box3().setFromObject(currentMesh);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
@@ -377,6 +379,7 @@ function onModelLoaded(mesh) {
   controls.minDistance = Math.max(0.02, maxDim * 0.002);
   controls.maxDistance = Math.max(1000, maxDim * 50);
 
+  camera.up.set(0, 1, 0);
   controls.target.copy(center);
   setOrbitPivot(center, false);
   camera.position.copy(
@@ -697,8 +700,6 @@ function updateFaceHoverBadge(surfaceId) {
 
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
-const _pivotProj = new THREE.Vector3();
-const _fallbackBox = new THREE.Box3();
 const _edgeClosestPt = new THREE.Vector3();
 
 function getSurfaceHitAtClientPos(clientX, clientY) {
@@ -840,102 +841,6 @@ function resolveViewportTarget(clientX, clientY, isTouch = false) {
   }
   return { type: 'none' };
 }
-
-/**
- * Raycast the current mesh (and visible preview meshes) or sharp edges at client coordinates.
- */
-function getMeshPointAtClientPos(clientX, clientY, isTouch = false) {
-  if (!currentMesh) return null;
-  const rect = canvas.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-
-  pointerNDC.set(
-    ((clientX - rect.left) / rect.width) * 2 - 1,
-    -((clientY - rect.top) / rect.height) * 2 + 1
-  );
-  raycaster.setFromCamera(pointerNDC, camera);
-
-  const targets = [currentMesh];
-  if (previewGroup && previewGroup.visible) {
-    targets.push(previewGroup);
-  }
-
-  const hits = raycaster
-    .intersectObjects(targets, true)
-    .filter((hit) => hit.object?.isMesh)
-    .sort((a, b) => a.distance - b.distance);
-
-  if (hits.length > 0) {
-    return hits[0].point.clone();
-  }
-
-  const edgeIdx = getClosestEdge(clientX, clientY, isTouch);
-  if (edgeIdx >= 0 && currentEdgeData?.sharpEdges[edgeIdx]) {
-    const edge = currentEdgeData.sharpEdges[edgeIdx];
-    const ptOnEdge = new THREE.Vector3();
-    raycaster.ray.distanceSqToSegment(edge.v1, edge.v2, undefined, ptOnEdge);
-    return ptOnEdge;
-  }
-
-  return null;
-}
-
-/**
- * Choose a fallback orbit pivot when dragging on empty background space.
- */
-function getFallbackPivotPoint() {
-  if (!currentMesh) return new THREE.Vector3(0, 0, 0);
-
-  _pivotProj.copy(orbitPivot).project(camera);
-  if (
-    _pivotProj.z >= -1 &&
-    _pivotProj.z <= 1 &&
-    Math.abs(_pivotProj.x) <= 1.05 &&
-    Math.abs(_pivotProj.y) <= 1.05
-  ) {
-    return orbitPivot.clone();
-  }
-
-  pointerNDC.set(0, 0);
-  raycaster.setFromCamera(pointerNDC, camera);
-  const hits = raycaster.intersectObject(currentMesh, true);
-  if (hits.length > 0) {
-    return hits[0].point.clone();
-  }
-
-  _fallbackBox.setFromObject(currentMesh);
-  return _fallbackBox.getCenter(new THREE.Vector3());
-}
-
-canvas.addEventListener(
-  'pointerdown',
-  (e) => {
-    if (!currentMesh) return;
-    const isTouch = e.pointerType === 'touch';
-    const hitPoint = getMeshPointAtClientPos(e.clientX, e.clientY, isTouch);
-    if (e.button === 0 || (isTouch && e.isPrimary)) {
-      const pivot = hitPoint || getFallbackPivotPoint();
-      setOrbitPivot(pivot, true, false);
-    } else if (e.button === 1 || e.button === 2) {
-      syncTargetDepthToPoint(hitPoint || orbitPivot, false);
-    }
-  },
-  { capture: true }
-);
-
-canvas.addEventListener(
-  'wheel',
-  (e) => {
-    if (!currentMesh) return;
-    const hitPoint = getMeshPointAtClientPos(e.clientX, e.clientY);
-    if (hitPoint) {
-      setOrbitPivot(hitPoint, true, true);
-    } else {
-      syncTargetDepthToPoint(orbitPivot, false);
-    }
-  },
-  { capture: true, passive: true }
-);
 
 canvas.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;

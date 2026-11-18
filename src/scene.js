@@ -7,9 +7,106 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export let scene, camera, renderer, controls;
 export const orbitPivot = new THREE.Vector3(0, 0, 0);
-let gridHelper, axesHelper;
-const _forward = new THREE.Vector3();
-const _tempVec = new THREE.Vector3();
+let gridHelper, axesHelper, rotationCenterHelper;
+
+/**
+ * Build an overlay-rendered 3D crosshair + gimbal sphere indicating the active rotation center.
+ * @returns {THREE.Group}
+ */
+function createRotationCenterHelper() {
+  const group = new THREE.Group();
+  group.visible = false;
+
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16, 16, 16),
+    new THREE.MeshBasicMaterial({
+      color: 0xff9f1c,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.95,
+    })
+  );
+  sphere.renderOrder = 999;
+  group.add(sphere);
+
+  // 3D XYZ crosshair spanning [-1, 1] along each axis
+  const axisPositions = new Float32Array([
+    -1, 0, 0, 1, 0, 0,
+    0, -1, 0, 0, 1, 0,
+    0, 0, -1, 0, 0, 1,
+  ]);
+  const cX = new THREE.Color(0xff595e);
+  const cY = new THREE.Color(0x8ac926);
+  const cZ = new THREE.Color(0x4cc9f0);
+  const axisColors = new Float32Array([
+    cX.r, cX.g, cX.b, cX.r, cX.g, cX.b,
+    cY.r, cY.g, cY.b, cY.r, cY.g, cY.b,
+    cZ.r, cZ.g, cZ.b, cZ.r, cZ.g, cZ.b,
+  ]);
+  const axisGeo = new THREE.BufferGeometry();
+  axisGeo.setAttribute('position', new THREE.BufferAttribute(axisPositions, 3));
+  axisGeo.setAttribute('color', new THREE.BufferAttribute(axisColors, 3));
+  const axesLines = new THREE.LineSegments(
+    axisGeo,
+    new THREE.LineBasicMaterial({
+      vertexColors: true,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.95,
+    })
+  );
+  axesLines.renderOrder = 998;
+  group.add(axesLines);
+
+  // 3 orthogonal gimbal rings (XY, YZ, ZX)
+  const ringRadius = 0.62;
+  const ringSegs = 48;
+  const ringPositions = new Float32Array(3 * ringSegs * 6);
+  let ptr = 0;
+  for (let i = 0; i < ringSegs; i++) {
+    const a0 = (i / ringSegs) * Math.PI * 2;
+    const a1 = ((i + 1) / ringSegs) * Math.PI * 2;
+    const x0 = Math.cos(a0) * ringRadius;
+    const y0 = Math.sin(a0) * ringRadius;
+    const x1 = Math.cos(a1) * ringRadius;
+    const y1 = Math.sin(a1) * ringRadius;
+
+    // XY plane
+    ringPositions[ptr++] = x0; ringPositions[ptr++] = y0; ringPositions[ptr++] = 0;
+    ringPositions[ptr++] = x1; ringPositions[ptr++] = y1; ringPositions[ptr++] = 0;
+    // YZ plane
+    ringPositions[ptr++] = 0; ringPositions[ptr++] = x0; ringPositions[ptr++] = y0;
+    ringPositions[ptr++] = 0; ringPositions[ptr++] = x1; ringPositions[ptr++] = y1;
+    // ZX plane
+    ringPositions[ptr++] = y0; ringPositions[ptr++] = 0; ringPositions[ptr++] = x0;
+    ringPositions[ptr++] = y1; ringPositions[ptr++] = 0; ringPositions[ptr++] = x1;
+  }
+  const ringGeo = new THREE.BufferGeometry();
+  ringGeo.setAttribute('position', new THREE.BufferAttribute(ringPositions, 3));
+  const ringLines = new THREE.LineSegments(
+    ringGeo,
+    new THREE.LineBasicMaterial({
+      color: 0xffbf69,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.5,
+    })
+  );
+  ringLines.renderOrder = 998;
+  group.add(ringLines);
+
+  return group;
+}
+
+/**
+ * Sync the rotation center helper position (locked to orbitPivot) and camera-distance scale.
+ */
+function updateRotationCenterHelper() {
+  if (!camera || !rotationCenterHelper) return;
+  rotationCenterHelper.position.copy(orbitPivot);
+  const dist = camera.position.distanceTo(orbitPivot);
+  rotationCenterHelper.scale.setScalar(Math.max(0.05, dist * 0.055));
+}
 
 /**
  * Initialise the Three.js scene and attach it to #canvas.
@@ -49,30 +146,28 @@ export function initScene() {
   camera.position.set(5, 4, 6);
   scene.add(camera);
 
-  // Controls
+  // Controls — centered OrbitControls turntable with seamless 360° pole-crossing
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.zoomToCursor = true;
+  controls.zoomToCursor = false;
   controls.minDistance = 0.05;
   controls.target.set(0, 0, 0);
   controls.update();
 
-  // Wrap controls.update so rotation (including damping) pivots around orbitPivot
-  // without moving the camera on pointerdown or breaking OrbitControls's spherical state.
+  const POLE_EPS = 1e-4;
+  const baseRotateLeft = controls._rotateLeft.bind(controls);
+  const baseRotateUp = controls._rotateUp.bind(controls);
   const baseUpdate = controls.update.bind(controls);
+  const _poleOffset = new THREE.Vector3();
+  const _poleSpherical = new THREE.Spherical();
   const prevQuat = new THREE.Quaternion();
   const prevTarget = new THREE.Vector3();
   const deltaQuat = new THREE.Quaternion();
   const targetOffset = new THREE.Vector3();
   const deltaTarget = new THREE.Vector3();
 
-  controls.update = function (deltaTime) {
-    prevQuat.copy(camera.quaternion);
-    prevTarget.copy(controls.target);
-
-    const result = baseUpdate(deltaTime);
-
+  function applyOrbitPivotRotation() {
     if (1 - Math.abs(prevQuat.dot(camera.quaternion)) > 1e-12) {
       deltaQuat.copy(camera.quaternion).multiply(prevQuat.invert());
       targetOffset.subVectors(prevTarget, orbitPivot).applyQuaternion(deltaQuat);
@@ -80,7 +175,56 @@ export function initScene() {
       controls.target.add(deltaTarget);
       camera.position.add(deltaTarget);
     }
+    updateRotationCenterHelper();
+  }
 
+  controls._rotateLeft = function (angle) {
+    const sign = Math.sign(camera.up.y || 1);
+    return baseRotateLeft(angle * sign);
+  };
+
+  controls._rotateUp = function (angle) {
+    const sign = Math.sign(camera.up.y || 1);
+    return baseRotateUp(angle * sign);
+  };
+
+  controls.update = function (deltaTime) {
+    prevQuat.copy(camera.quaternion);
+    prevTarget.copy(controls.target);
+
+    _poleOffset.subVectors(camera.position, controls.target);
+    _poleSpherical.setFromVector3(_poleOffset);
+
+    if (_poleSpherical.radius > 1e-10) {
+      const dPhi = controls.enableDamping
+        ? controls._sphericalDelta.phi * controls.dampingFactor
+        : controls._sphericalDelta.phi;
+      const nextPhi = _poleSpherical.phi + dPhi;
+      const crossingTop = dPhi < 0 && nextPhi <= POLE_EPS;
+      const crossingBottom = dPhi > 0 && nextPhi >= Math.PI - POLE_EPS;
+
+      if (crossingTop || crossingBottom) {
+        const reflectedPhi = crossingTop ? -nextPhi : 2 * Math.PI - nextPhi;
+        _poleSpherical.phi = Math.max(POLE_EPS, Math.min(Math.PI - POLE_EPS, reflectedPhi));
+        _poleSpherical.theta += Math.PI;
+        _poleOffset.setFromSpherical(_poleSpherical);
+        camera.position.copy(controls.target).add(_poleOffset);
+        camera.up.y = -(camera.up.y || 1);
+
+        const nextDeltaPhi = controls.enableDamping
+          ? -controls._sphericalDelta.phi * (1 - controls.dampingFactor)
+          : 0;
+        controls._sphericalDelta.phi = 0;
+
+        const result = baseUpdate(deltaTime);
+        controls._sphericalDelta.phi = nextDeltaPhi;
+        applyOrbitPivotRotation();
+        return result;
+      }
+    }
+
+    const result = baseUpdate(deltaTime);
+    applyOrbitPivotRotation();
     return result;
   };
 
@@ -130,6 +274,11 @@ export function initScene() {
   axesHelper.visible = false;
   scene.add(axesHelper);
 
+  // Rotation Center marker (default OFF)
+  rotationCenterHelper = createRotationCenterHelper();
+  scene.add(rotationCenterHelper);
+  updateRotationCenterHelper();
+
   // Resize
   const resizeObserver = new ResizeObserver(() => {
     const w = viewport.clientWidth;
@@ -155,36 +304,34 @@ export function setAxesVisible(visible) {
   if (axesHelper) axesHelper.visible = visible;
 }
 
-/**
- * Adjust controls.target along the current view ray to match the distance to `point`
- * without changing camera position or orientation.
- */
-export function syncTargetDepthToPoint(point, useRadialDistance = false) {
-  if (!camera || !controls || !point) return;
-
-  _forward.subVectors(controls.target, camera.position);
-  if (_forward.lengthSq() <= 1e-10) {
-    camera.getWorldDirection(_forward);
-  } else {
-    _forward.normalize();
-  }
-
-  const dist = useRadialDistance
-    ? camera.position.distanceTo(point)
-    : _tempVec.subVectors(point, camera.position).dot(_forward);
-
-  if (dist > controls.minDistance) {
-    controls.target.copy(camera.position).addScaledVector(_forward, dist);
+/** Toggle the 3D rotation center visualizer visibility */
+export function setRotationCenterVisible(visible) {
+  if (rotationCenterHelper) {
+    rotationCenterHelper.visible = visible;
+    if (visible) updateRotationCenterHelper();
   }
 }
 
 /**
- * Set the active orbit pivot point and optionally sync controls.target depth.
+ * Set controls.target and orbitPivot to `point`.
  */
-export function setOrbitPivot(point, syncTargetDepth = true, useRadialDistance = false) {
+export function syncTargetDepthToPoint(point) {
   if (!point) return;
   orbitPivot.copy(point);
-  if (syncTargetDepth) {
-    syncTargetDepthToPoint(point, useRadialDistance);
+  if (controls) {
+    controls.target.copy(point);
   }
+  updateRotationCenterHelper();
+}
+
+/**
+ * Set the active orbit pivot point and optionally sync controls.target.
+ */
+export function setOrbitPivot(point, syncTarget = true) {
+  if (!point) return;
+  orbitPivot.copy(point);
+  if (syncTarget && controls) {
+    controls.target.copy(point);
+  }
+  updateRotationCenterHelper();
 }

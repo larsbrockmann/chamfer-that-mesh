@@ -15,6 +15,7 @@
  * @property {(wireframe: boolean) => void} onWireframeToggle
  * @property {(grid: boolean) => void} onGridToggle
  * @property {(axes: boolean) => void} onAxesToggle
+ * @property {(rotationCenter: boolean) => void} onRotationCenterToggle
  * @property {(edges: boolean) => void} onEdgeHighlightToggle
  */
 
@@ -783,6 +784,14 @@ export function buildUI(callbacks) {
     .querySelector('input')
     .addEventListener('change', (e) => callbacks.onAxesToggle(e.target.checked));
   viewSection.appendChild(axesToggle);
+
+  const rotCenterToggle = toggleRow('Rotation Center', false);
+  rotCenterToggle
+    .querySelector('input')
+    .addEventListener('change', (e) =>
+      callbacks.onRotationCenterToggle && callbacks.onRotationCenterToggle(e.target.checked)
+    );
+  viewSection.appendChild(rotCenterToggle);
 
   const edgeHighlightToggle = toggleRow('Edge Highlight', true);
   const edgeHighlightInput = edgeHighlightToggle.querySelector('input');
