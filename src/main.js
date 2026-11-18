@@ -43,6 +43,8 @@ let initialGeometry = null;
 let currentIsInitial = true;
 let currentEdgeData = null;
 let edgeLinesObject = null;
+let faceHighlightMesh = null;
+let highlightedSurfaceId = -1;
 let previewGroup = null;
 let showLoosePartsPreview = false;
 let loosePartsPreviewGroup = null;
@@ -170,7 +172,8 @@ let chamferSegments = 1;
 let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
 let showPreview = false;
 let showEdgeHighlight = true;
-let loopSelectionMode = true; // default to loop/chain selection
+let selectionMode = 'loop'; // 'loop' | 'single' | 'face'
+let loopSelectionMode = true; // synced: true when selectionMode === 'loop'
 let autoFixMesh = false;
 let removeUnconnectedParts = false;
 
@@ -191,7 +194,7 @@ initScene();
 
 const canvas = document.getElementById('canvas');
 
-const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
+const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode } = buildUI({
   onImport: () => {},
   onLoadSample: (url) => {
     loadFromUrl(url, onModelLoaded, onModelLoadError);
@@ -227,7 +230,9 @@ const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
   onSelectVertical: handleSelectVertical,
   onSelectTopBottom: handleSelectTopBottom,
   onSelectionModeChange: (mode) => {
-    loopSelectionMode = mode === 'loop';
+    selectionMode = mode || 'loop';
+    loopSelectionMode = selectionMode === 'loop';
+    clearHoverState();
   },
   onProfileChange: (profile, segments) => {
     chamferProfile = profile;
@@ -320,6 +325,7 @@ const { updateInfo, fileInput, setWidth, setAngle } = buildUI({
   onEdgeHighlightToggle: (v) => {
     showEdgeHighlight = v;
     if (edgeLinesObject) edgeLinesObject.visible = v;
+    if (!v) clearHoverState();
   },
 });
 
@@ -419,11 +425,18 @@ function ensureEdgeHighlightVisible() {
 }
 
 // ---- Edge selection shortcuts ----
+function syncActiveFaceHighlight() {
+  if (highlightedSurfaceId >= 0) {
+    updateFaceHighlight(highlightedSurfaceId, false);
+  }
+}
+
 function handleSelectAll() {
   if (!currentEdgeData) return;
   ensureEdgeHighlightVisible();
   currentEdgeData.selectAll();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
 }
 
@@ -431,6 +444,7 @@ function handleSelectNone() {
   if (!currentEdgeData) return;
   currentEdgeData.clearSelection();
   updateEdgeCount(currentEdgeData.sharpEdges.length, 0, currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
 }
 
@@ -439,6 +453,7 @@ function handleSelectInvert() {
   ensureEdgeHighlightVisible();
   currentEdgeData.invertSelection();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
 }
 
@@ -447,6 +462,7 @@ function handleSelectHorizontal() {
   ensureEdgeHighlightVisible();
   currentEdgeData.selectHorizontal();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} horizontal edges`, 'is-selected');
 }
@@ -456,6 +472,7 @@ function handleSelectVertical() {
   ensureEdgeHighlightVisible();
   currentEdgeData.selectVertical();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} vertical edges`, 'is-selected');
 }
@@ -465,6 +482,7 @@ function handleSelectTopBottom() {
   ensureEdgeHighlightVisible();
   currentEdgeData.selectTopBottom();
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
+  syncActiveFaceHighlight();
   if (showPreview) updatePreview();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} top & bottom edges`, 'is-selected');
 }
@@ -474,6 +492,7 @@ function handleDetectEdges(options = {}) {
   if (!currentMesh) return;
 
   removeEdgeLines();
+  clearFaceHighlight();
   removePreview();
   hideLoosePartsPreview();
 
@@ -512,9 +531,108 @@ function handleDetectEdges(options = {}) {
   }
 }
 
-// ---- Interactive 3D Edge Hover & Selection ----
+// ---- Interactive 3D Edge & Face Hover & Selection ----
 let pointerDownPos = { x: 0, y: 0 };
+let postClickOrigin = null;
 const hoverBadge = document.getElementById('edge-hover-badge');
+
+function clearFaceHighlight() {
+  if (faceHighlightMesh) {
+    scene.remove(faceHighlightMesh);
+    faceHighlightMesh.geometry?.dispose();
+    faceHighlightMesh.material?.dispose();
+    faceHighlightMesh = null;
+  }
+  highlightedSurfaceId = -1;
+}
+
+function clearHoverState() {
+  postClickOrigin = null;
+  clearFaceHighlight();
+  if (currentEdgeData) {
+    currentEdgeData.setHovered(-1);
+  }
+  if (hoverBadge) {
+    hoverBadge.classList.remove('visible');
+  }
+  canvas.style.cursor = 'default';
+}
+
+function updateFaceHighlight(surfaceId, forceRebuild = false) {
+  if (
+    surfaceId < 0 ||
+    !currentEdgeData ||
+    !currentEdgeData.surfaces[surfaceId] ||
+    !showEdgeHighlight
+  ) {
+    clearFaceHighlight();
+    return;
+  }
+
+  const surf = currentEdgeData.surfaces[surfaceId];
+  const { allSelected } = currentEdgeData.getSurfaceSelectionState(surfaceId);
+  const color = allSelected ? 0xff6b38 : 0x1ff08f;
+  const opacity = allSelected ? 0.28 : 0.26;
+
+  if (!faceHighlightMesh || surfaceId !== highlightedSurfaceId || forceRebuild) {
+    const faceCount = surf.faceIndices.length;
+    const positions = new Float32Array(faceCount * 9);
+    const { faces, vertices } = currentEdgeData;
+    for (let i = 0; i < faceCount; i++) {
+      const tri = faces[surf.faceIndices[i]];
+      if (!tri) continue;
+      const v0 = vertices[tri[0]];
+      const v1 = vertices[tri[1]];
+      const v2 = vertices[tri[2]];
+      if (!v0 || !v1 || !v2) continue;
+      const off = i * 9;
+      positions[off] = v0.x;
+      positions[off + 1] = v0.y;
+      positions[off + 2] = v0.z;
+      positions[off + 3] = v1.x;
+      positions[off + 4] = v1.y;
+      positions[off + 5] = v1.z;
+      positions[off + 6] = v2.x;
+      positions[off + 7] = v2.y;
+      positions[off + 8] = v2.z;
+    }
+
+    if (!faceHighlightMesh) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1.5,
+        polygonOffsetUnits: -3.0,
+      });
+      faceHighlightMesh = new THREE.Mesh(geo, mat);
+      faceHighlightMesh.name = 'faceHighlight';
+      faceHighlightMesh.renderOrder = 5;
+      scene.add(faceHighlightMesh);
+    } else {
+      faceHighlightMesh.geometry.dispose();
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      faceHighlightMesh.geometry = geo;
+    }
+
+    if (currentMesh) {
+      faceHighlightMesh.position.copy(currentMesh.position);
+      faceHighlightMesh.quaternion.copy(currentMesh.quaternion);
+      faceHighlightMesh.scale.copy(currentMesh.scale);
+    }
+    highlightedSurfaceId = surfaceId;
+  }
+
+  faceHighlightMesh.material.color.setHex(color);
+  faceHighlightMesh.material.opacity = opacity;
+}
 
 function updateHoverBadge(edgeIdx) {
   if (!hoverBadge) return;
@@ -525,28 +643,116 @@ function updateHoverBadge(edgeIdx) {
 
   const edge = currentEdgeData.sharpEdges[edgeIdx];
   const isSel = edge.selected;
+  const isHoverPreview = postClickOrigin === null;
   const count = loopSelectionMode && edge.chainId !== undefined && currentEdgeData.chains[edge.chainId]
     ? currentEdgeData.chains[edge.chainId].length
     : 1;
   const loopLabel = loopSelectionMode ? `Loop (${count} segments)` : 'Edge';
 
   if (isSel) {
-    hoverBadge.className = 'edge-hover-badge visible is-selected';
-    hoverBadge.innerHTML = `<span class="badge-dot dot-selected"></span><span>Selected ${loopLabel}</span><span class="badge-action">Click to deselect</span>`;
+    const stateCls = isHoverPreview ? 'is-hover-deselect' : 'is-selected';
+    const dotCls = isHoverPreview ? 'dot-hover-deselect' : 'dot-selected';
+    hoverBadge.className = `edge-hover-badge visible ${stateCls}`;
+    hoverBadge.innerHTML = `<span class="badge-dot ${dotCls}"></span><span>Selected ${loopLabel}</span><span class="badge-action">Click to deselect (−)</span>`;
   } else {
-    hoverBadge.className = 'edge-hover-badge visible is-unselected';
-    hoverBadge.innerHTML = `<span class="badge-dot dot-unselected"></span><span>Unselected ${loopLabel}</span><span class="badge-action">Click to select</span>`;
+    const stateCls = isHoverPreview ? 'is-hover-select' : 'is-unselected';
+    const dotCls = isHoverPreview ? 'dot-hover-select' : 'dot-unselected';
+    hoverBadge.className = `edge-hover-badge visible ${stateCls}`;
+    hoverBadge.innerHTML = `<span class="badge-dot ${dotCls}"></span><span>Unselected ${loopLabel}</span><span class="badge-action">Click to select (+)</span>`;
   }
 }
 
-function getClosestEdge(clientX, clientY, isTouch = false) {
+function updateFaceHoverBadge(surfaceId) {
+  if (!hoverBadge) return;
+  if (surfaceId < 0 || !currentEdgeData || !currentEdgeData.surfaces[surfaceId]) {
+    hoverBadge.classList.remove('visible');
+    return;
+  }
+
+  const { total, selectedCount, allSelected, noneSelected } =
+    currentEdgeData.getSurfaceSelectionState(surfaceId);
+  if (total === 0) {
+    hoverBadge.classList.remove('visible');
+    return;
+  }
+
+  const isHoverPreview = postClickOrigin === null;
+  const edgeWord = total === 1 ? 'edge' : 'edges';
+  if (allSelected) {
+    const stateCls = isHoverPreview ? 'is-hover-deselect' : 'is-selected';
+    const dotCls = isHoverPreview ? 'dot-hover-deselect' : 'dot-selected';
+    hoverBadge.className = `edge-hover-badge visible ${stateCls}`;
+    hoverBadge.innerHTML = `<span class="badge-dot ${dotCls}"></span><span>Selected Face (${total} ${edgeWord})</span><span class="badge-action">Click to deselect (−)</span>`;
+  } else {
+    const stateCls = isHoverPreview ? 'is-hover-select' : 'is-unselected';
+    const dotCls = isHoverPreview ? 'dot-hover-select' : 'dot-unselected';
+    const label = noneSelected
+      ? `Unselected Face (${total} ${edgeWord})`
+      : `Face (${selectedCount}/${total} ${edgeWord} selected)`;
+    const action = noneSelected ? 'Click to select (+)' : 'Click to select all (+)';
+    hoverBadge.className = `edge-hover-badge visible ${stateCls}`;
+    hoverBadge.innerHTML = `<span class="badge-dot ${dotCls}"></span><span>${label}</span><span class="badge-action">${action}</span>`;
+  }
+}
+
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+const _pivotProj = new THREE.Vector3();
+const _fallbackBox = new THREE.Box3();
+const _edgeClosestPt = new THREE.Vector3();
+
+function getSurfaceHitAtClientPos(clientX, clientY) {
+  if (!currentMesh || !currentEdgeData || currentEdgeData.surfaces.length === 0) {
+    return null;
+  }
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  pointerNDC.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(pointerNDC, camera);
+
+  const hits = raycaster.intersectObject(currentMesh, false);
+  if (hits.length === 0) return null;
+
+  const hit = hits[0];
+  if (hit.faceIndex === undefined || hit.faceIndex < 0) return null;
+  if (hit.faceIndex >= currentEdgeData.faceToSurface.length) return null;
+
+  const surfaceId = currentEdgeData.faceToSurface[hit.faceIndex];
+  if (
+    surfaceId < 0 ||
+    !currentEdgeData.surfaces[surfaceId] ||
+    currentEdgeData.surfaces[surfaceId].edgeIndices.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    surfaceId,
+    distance: hit.distance,
+    point: hit.point,
+    faceIndex: hit.faceIndex,
+  };
+}
+
+function getClosestEdge(clientX, clientY, isTouch = false, maxFrontDist = Infinity) {
   if (!currentEdgeData || currentEdgeData.sharpEdges.length === 0) return -1;
   const rect = canvas.getBoundingClientRect();
   const mx = clientX - rect.left;
   const my = clientY - rect.top;
   const w = rect.width;
   const h = rect.height;
+  if (w <= 0 || h <= 0) return -1;
 
+  if (maxFrontDist < Infinity) {
+    pointerNDC.set((mx / w) * 2 - 1, -(my / h) * 2 + 1);
+    raycaster.setFromCamera(pointerNDC, camera);
+  }
+
+  const occlusionTol = Math.max(0.4, maxFrontDist * 0.02);
   const maxTolerance = isTouch ? 28 : 18;
   const maxToleranceSq = maxTolerance * maxTolerance;
 
@@ -581,6 +787,11 @@ function getClosestEdge(clientX, clientY, isTouch = false) {
     }
 
     if (distSq <= maxToleranceSq) {
+      if (maxFrontDist < Infinity) {
+        raycaster.ray.distanceSqToSegment(edge.v1, edge.v2, undefined, _edgeClosestPt);
+        const camDist = camera.position.distanceTo(_edgeClosestPt);
+        if (camDist > maxFrontDist + occlusionTol) continue;
+      }
       const midZ = (p1Proj.z + p2Proj.z) * 0.5;
       candidates.push({ idx: i, dist: Math.sqrt(distSq), midZ });
     }
@@ -601,10 +812,34 @@ function getClosestEdge(clientX, clientY, isTouch = false) {
   return candidates[0].idx;
 }
 
-const raycaster = new THREE.Raycaster();
-const pointerNDC = new THREE.Vector2();
-const _pivotProj = new THREE.Vector3();
-const _fallbackBox = new THREE.Box3();
+function resolveViewportTarget(clientX, clientY, isTouch = false) {
+  const surfaceHit = getSurfaceHitAtClientPos(clientX, clientY);
+
+  if (selectionMode === 'face') {
+    if (surfaceHit) {
+      return { type: 'face', surfaceId: surfaceHit.surfaceId };
+    }
+    const edgeIdx = getClosestEdge(clientX, clientY, isTouch);
+    if (edgeIdx >= 0) {
+      return { type: 'edge', edgeIdx };
+    }
+    return { type: 'none' };
+  }
+
+  const edgeIdx = getClosestEdge(
+    clientX,
+    clientY,
+    isTouch,
+    surfaceHit ? surfaceHit.distance : Infinity
+  );
+  if (edgeIdx >= 0) {
+    return { type: 'edge', edgeIdx };
+  }
+  if (surfaceHit) {
+    return { type: 'face', surfaceId: surfaceHit.surfaceId };
+  }
+  return { type: 'none' };
+}
 
 /**
  * Raycast the current mesh (and visible preview meshes) or sharp edges at client coordinates.
@@ -706,14 +941,31 @@ canvas.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   if (!currentEdgeData || controls.state !== -1) return;
   if (!showEdgeHighlight) {
-    if (hoverBadge) hoverBadge.classList.remove('visible');
-    canvas.style.cursor = 'default';
+    clearHoverState();
     return;
   }
-  const idx = getClosestEdge(e.clientX, e.clientY, false);
-  currentEdgeData.setHovered(idx, loopSelectionMode);
-  updateHoverBadge(idx);
-  canvas.style.cursor = idx >= 0 ? 'pointer' : 'default';
+  if (postClickOrigin) {
+    const moveDist = Math.hypot(e.clientX - postClickOrigin.x, e.clientY - postClickOrigin.y);
+    if (moveDist < 4) return;
+    postClickOrigin = null;
+  }
+  const target = resolveViewportTarget(e.clientX, e.clientY, false);
+  if (target.type === 'edge') {
+    clearFaceHighlight();
+    currentEdgeData.setHovered(target.edgeIdx, loopSelectionMode);
+    updateHoverBadge(target.edgeIdx);
+    canvas.style.cursor = 'pointer';
+  } else if (target.type === 'face') {
+    currentEdgeData.setHoveredSurface(target.surfaceId);
+    updateFaceHighlight(target.surfaceId);
+    updateFaceHoverBadge(target.surfaceId);
+    canvas.style.cursor = 'pointer';
+  } else {
+    clearFaceHighlight();
+    currentEdgeData.setHovered(-1);
+    updateHoverBadge(-1);
+    canvas.style.cursor = 'default';
+  }
 });
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -724,34 +976,51 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   const isTouch = e.pointerType === 'touch';
   if (isTouch && !e.isPrimary) return;
+  if (!isTouch && e.button !== 0) return;
   const tapThreshold = isTouch ? 14 : 6;
   const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
   if (dist < tapThreshold && currentEdgeData && showEdgeHighlight) {
-    const idx = getClosestEdge(e.clientX, e.clientY, isTouch);
-    if (idx >= 0) {
-      currentEdgeData.toggleEdge(idx, loopSelectionMode);
+    const target = resolveViewportTarget(e.clientX, e.clientY, isTouch);
+    if (target.type === 'edge') {
+      currentEdgeData.toggleEdge(target.edgeIdx, loopSelectionMode);
+      postClickOrigin = { x: e.clientX, y: e.clientY };
+      clearFaceHighlight();
+      currentEdgeData.setHovered(-1);
       updateEdgeCount(
         currentEdgeData.sharpEdges.length,
         currentEdgeData.getSelectedCount(),
         currentEdgeData.filteredCount
       );
       if (isTouch) {
-        currentEdgeData.setHovered(-1);
         updateHoverBadge(-1);
       } else {
-        updateHoverBadge(idx);
+        updateHoverBadge(target.edgeIdx);
       }
       if (showPreview) updatePreview();
+    } else if (target.type === 'face') {
+      const toggled = currentEdgeData.toggleSurface(target.surfaceId);
+      if (toggled) {
+        postClickOrigin = { x: e.clientX, y: e.clientY };
+        clearFaceHighlight();
+        currentEdgeData.setHovered(-1);
+        updateEdgeCount(
+          currentEdgeData.sharpEdges.length,
+          currentEdgeData.getSelectedCount(),
+          currentEdgeData.filteredCount
+        );
+        if (isTouch) {
+          updateHoverBadge(-1);
+        } else {
+          updateFaceHoverBadge(target.surfaceId);
+        }
+        if (showPreview) updatePreview();
+      }
     }
   }
 });
 
 canvas.addEventListener('pointerleave', () => {
-  if (currentEdgeData) {
-    currentEdgeData.setHovered(-1);
-    updateHoverBadge(-1);
-    canvas.style.cursor = 'default';
-  }
+  clearHoverState();
 });
 
 // Update LineMaterial screen resolution on viewport/canvas resize
@@ -1326,6 +1595,7 @@ function handleExport3MF() {
 
 // ---- Helpers ----
 function removeEdgeLines() {
+  clearFaceHighlight();
   if (edgeLinesObject) {
     scene.remove(edgeLinesObject);
     if (currentEdgeData?.dispose) {
@@ -1422,6 +1692,18 @@ window.addEventListener('keydown', (e) => {
     } else if (k === 't') {
       e.preventDefault();
       handleSelectTopBottom();
+    } else if (k === 'f') {
+      e.preventDefault();
+      setSelectionMode('face');
+      showToast('Click Mode: Face — click any face to toggle its adjacent edges (F)', 'is-selected');
+    } else if (k === 'l') {
+      e.preventDefault();
+      setSelectionMode('loop');
+      showToast('Click Mode: Chain Loop (L)', 'is-selected');
+    } else if (k === 's') {
+      e.preventDefault();
+      setSelectionMode('single');
+      showToast('Click Mode: Single Edge (S)', 'is-selected');
     }
   }
 });

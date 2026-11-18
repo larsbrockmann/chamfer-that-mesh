@@ -419,30 +419,51 @@ export function buildUI(callbacks) {
   shortcutRow.appendChild(topBottomBtn);
   edgeSection.appendChild(shortcutRow);
 
-  // Selection mode: Loop vs Single
+  // Selection mode: Loop vs Single vs Face
   const modeRow = el('div', 'control-row');
   modeRow.style.marginTop = '6px';
   const modeLbl = el('span', 'control-label', 'Click Mode');
-  const modeGroup = el('div', 'segmented-control');
+  const modeGroup = el('div', 'segmented-control click-mode-group');
+  modeGroup.id = 'click-mode-group';
+
   const loopRadio = document.createElement('button');
   loopRadio.textContent = 'Chain Loop';
   loopRadio.className = 'segment-btn active';
+  loopRadio.title = 'Click an edge to toggle its connected chain loop (Shortcut: L)';
+
   const singleRadio = document.createElement('button');
   singleRadio.textContent = 'Single Edge';
   singleRadio.className = 'segment-btn';
+  singleRadio.title = 'Click an edge to toggle only that single segment (Shortcut: S)';
 
-  loopRadio.addEventListener('click', () => {
-    loopRadio.classList.add('active');
-    singleRadio.classList.remove('active');
-    if (callbacks.onSelectionModeChange) callbacks.onSelectionModeChange('loop');
-  });
-  singleRadio.addEventListener('click', () => {
-    singleRadio.classList.add('active');
-    loopRadio.classList.remove('active');
-    if (callbacks.onSelectionModeChange) callbacks.onSelectionModeChange('single');
-  });
+  const faceRadio = document.createElement('button');
+  faceRadio.textContent = 'Face';
+  faceRadio.className = 'segment-btn';
+  faceRadio.title = 'Click any face to select or deselect all of its adjacent edges (Shortcut: F)';
+
+  const selectionModeBtns = {
+    loop: loopRadio,
+    single: singleRadio,
+    face: faceRadio,
+  };
+
+  function setSelectionMode(mode) {
+    const normalized = selectionModeBtns[mode] ? mode : 'loop';
+    for (const [key, btn] of Object.entries(selectionModeBtns)) {
+      btn.classList.toggle('active', key === normalized);
+    }
+    if (callbacks.onSelectionModeChange) {
+      callbacks.onSelectionModeChange(normalized);
+    }
+  }
+
+  loopRadio.addEventListener('click', () => setSelectionMode('loop'));
+  singleRadio.addEventListener('click', () => setSelectionMode('single'));
+  faceRadio.addEventListener('click', () => setSelectionMode('face'));
+
   modeGroup.appendChild(loopRadio);
   modeGroup.appendChild(singleRadio);
+  modeGroup.appendChild(faceRadio);
   modeRow.appendChild(modeLbl);
   modeRow.appendChild(modeGroup);
   edgeSection.appendChild(modeRow);
@@ -450,7 +471,7 @@ export function buildUI(callbacks) {
   const helpHint = el(
     'div',
     'selection-hint',
-    '💡 Click edges in 3D viewport to toggle. Shortcuts: A (All), C (Clear), I (Invert), H (Horizontal), V (Vertical), T (Top/Bottom).'
+    '💡 Click edges or faces in 3D viewport to toggle. Modes: L (Loop), S (Single), F (Face). Shortcuts: A (All), C (Clear), I (Invert), H (Horizontal), V (Vertical), T (Top/Bottom).'
   );
   edgeSection.appendChild(helpHint);
 
@@ -458,9 +479,9 @@ export function buildUI(callbacks) {
   const legend = el('div', 'edge-legend');
   legend.innerHTML = `
     <div class="legend-item"><span class="legend-swatch swatch-selected"></span><span>Selected</span></div>
-    <div class="legend-item"><span class="legend-swatch swatch-hovered-sel"></span><span>Hover (Selected)</span></div>
+    <div class="legend-item"><span class="legend-swatch swatch-hovered-sel"></span><span>Hover (Deselect)</span></div>
     <div class="legend-item"><span class="legend-swatch swatch-unselected"></span><span>Unselected</span></div>
-    <div class="legend-item"><span class="legend-swatch swatch-hovered-unsel"></span><span>Hover (Unselected)</span></div>
+    <div class="legend-item"><span class="legend-swatch swatch-hovered-unsel"></span><span>Hover (Select)</span></div>
   `;
   edgeSection.appendChild(legend);
 
@@ -818,7 +839,7 @@ export function buildUI(callbacks) {
     angleValue.textContent = `${val}°`;
   }
 
-  return { updateInfo, fileInput, setWidth, setUndoRedoState, setAngle };
+  return { updateInfo, fileInput, setWidth, setUndoRedoState, setAngle, setSelectionMode };
 }
 
 /**

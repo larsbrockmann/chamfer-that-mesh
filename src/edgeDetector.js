@@ -33,10 +33,18 @@ export class EdgeData {
     this.faceNormals = [];
     /** @type {number[][]} array of edge index chains/loops */
     this.chains = [];
+    /** @type {Array<{ id: number, faceIndices: number[], edgeIndices: number[], normal: THREE.Vector3 }>} */
+    this.surfaces = [];
+    /** @type {Int32Array} maps triangle index to surface id */
+    this.faceToSurface = new Int32Array(0);
     /** @type {number} currently hovered edge index */
     this.hoveredEdgeIdx = -1;
     /** @type {number} currently hovered chain index */
     this.hoveredChainIdx = -1;
+    /** @type {number} currently hovered surface index */
+    this.hoveredSurfaceIdx = -1;
+    /** @type {Set<number>} sharp edge indices highlighted by hovered surface */
+    this.hoveredSurfaceEdgeSet = new Set();
   }
 
   selectAll() {
@@ -122,7 +130,9 @@ export class EdgeData {
    * Set currently hovered edge.
    */
   setHovered(edgeIdx, loopMode = true) {
-    if (this.hoveredEdgeIdx === edgeIdx) return;
+    if (this.hoveredEdgeIdx === edgeIdx && this.hoveredSurfaceIdx === -1) return;
+    this.hoveredSurfaceIdx = -1;
+    this.hoveredSurfaceEdgeSet.clear();
     this.hoveredEdgeIdx = edgeIdx;
     if (edgeIdx >= 0 && loopMode && this.sharpEdges[edgeIdx]) {
       this.hoveredChainIdx = this.sharpEdges[edgeIdx].chainId;
@@ -130,6 +140,76 @@ export class EdgeData {
       this.hoveredChainIdx = -1;
     }
     this.updateColors();
+  }
+
+  /**
+   * Set currently hovered logical surface and highlight all its adjacent sharp edges.
+   */
+  setHoveredSurface(surfaceId) {
+    const validId =
+      surfaceId >= 0 &&
+      surfaceId < this.surfaces.length &&
+      this.surfaces[surfaceId].edgeIndices.length > 0
+        ? surfaceId
+        : -1;
+    if (
+      this.hoveredSurfaceIdx === validId &&
+      this.hoveredEdgeIdx === -1 &&
+      this.hoveredChainIdx === -1
+    ) {
+      return;
+    }
+    this.hoveredEdgeIdx = -1;
+    this.hoveredChainIdx = -1;
+    this.hoveredSurfaceIdx = validId;
+    this.hoveredSurfaceEdgeSet.clear();
+    if (validId >= 0) {
+      for (const idx of this.surfaces[validId].edgeIndices) {
+        this.hoveredSurfaceEdgeSet.add(idx);
+      }
+    }
+    this.updateColors();
+  }
+
+  /**
+   * Compute selection summary for all sharp edges adjacent to `surfaceId`.
+   */
+  getSurfaceSelectionState(surfaceId) {
+    if (surfaceId < 0 || surfaceId >= this.surfaces.length) {
+      return { total: 0, selectedCount: 0, allSelected: false, noneSelected: true };
+    }
+    const edgeIndices = this.surfaces[surfaceId].edgeIndices;
+    const total = edgeIndices.length;
+    let selectedCount = 0;
+    for (const idx of edgeIndices) {
+      if (this.sharpEdges[idx]?.selected) selectedCount++;
+    }
+    return {
+      total,
+      selectedCount,
+      allSelected: total > 0 && selectedCount === total,
+      noneSelected: selectedCount === 0,
+    };
+  }
+
+  /**
+   * Select or deselect all sharp edges adjacent to `surfaceId`.
+   * If all adjacent edges are already selected, deselects all; otherwise selects all.
+   */
+  toggleSurface(surfaceId) {
+    if (surfaceId < 0 || surfaceId >= this.surfaces.length) return null;
+    const edgeIndices = this.surfaces[surfaceId].edgeIndices;
+    if (!edgeIndices || edgeIndices.length === 0) return null;
+
+    const { allSelected } = this.getSurfaceSelectionState(surfaceId);
+    const newSelected = !allSelected;
+    for (const idx of edgeIndices) {
+      if (this.sharpEdges[idx]) {
+        this.sharpEdges[idx].selected = newSelected;
+      }
+    }
+    this.updateColors();
+    return { newSelected, count: edgeIndices.length };
   }
 
   /**
@@ -143,32 +223,31 @@ export class EdgeData {
       const e = this.sharpEdges[i];
       const isHovered =
         this.hoveredEdgeIdx === i ||
-        (this.hoveredChainIdx >= 0 && e.chainId === this.hoveredChainIdx);
+        (this.hoveredChainIdx >= 0 && e.chainId === this.hoveredChainIdx) ||
+        this.hoveredSurfaceEdgeSet.has(i);
       const isSel = e.selected;
 
       let r, g, b;
       if (isSel && isHovered) {
-        // Hovering over an already selected edge:
-        // Bright glowing ice-cyan highlight, brighter than normal selected edges
-        r = 0.62;
-        g = 1.0;
-        b = 1.0;
-      } else if (isSel) {
-        // Vivid Cyan-Blue for normal selected edges
-        r = 0.0;
-        g = 0.72;
-        b = 0.96;
-      } else if (isHovered) {
-        // Hovering over an unselected edge:
-        // Bright Vivid Amber/Gold (invitation to select for chamfer)
+        // Hovering over a selected edge: Warm Coral-Orange (click will deselect)
         r = 1.0;
-        g = 0.88;
-        b = 0.15;
+        g = 0.42;
+        b = 0.22;
+      } else if (isSel) {
+        // Vibrant Electric Cyan for selected edges (active for chamfer)
+        r = 0.0;
+        g = 0.83;
+        b = 1.0;
+      } else if (isHovered) {
+        // Hovering over an unselected edge: Bright Emerald-Mint Green (click will select)
+        r = 0.12;
+        g = 0.94;
+        b = 0.56;
       } else {
-        // Neutral Cool Steel Slate for unselected detected edges (never brown/coral)
-        r = 0.40;
-        g = 0.50;
-        b = 0.60;
+        // Dark Muted Graphite for unselected edges (inactive / off)
+        r = 0.20;
+        g = 0.23;
+        b = 0.30;
       }
 
       const off = i * 6;
@@ -437,7 +516,13 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
         const e = sharpEdges[idx];
         if (preserveCurve || e.v1.distanceTo(e.v2) >= minEdgeLength) {
           const newIdx = newEdges.length;
-          const cloned = { ...e, v1: e.v1.clone(), v2: e.v2.clone(), chainId: newChains.length };
+          const cloned = {
+            ...e,
+            v1: e.v1.clone(),
+            v2: e.v2.clone(),
+            faceIndices: e.faceIndices ? [...e.faceIndices] : [e.faceIdx1, e.faceIdx2],
+            chainId: newChains.length,
+          };
           newEdges.push(cloned);
           chainNewIndices.push(newIdx);
         }
@@ -457,6 +542,7 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
       vi2: e0.vi2,
       faceIdx1: e0.faceIdx1,
       faceIdx2: e0.faceIdx2,
+      faceIndices: e0.faceIndices ? [...e0.faceIndices] : [e0.faceIdx1, e0.faceIdx2],
       opp1Idx: e0.opp1Idx,
       opp2Idx: e0.opp2Idx,
       isConvex: e0.isConvex,
@@ -498,6 +584,11 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
       if (connected && sameConvexity && nonBranching && isStrictlyCollinear && coplanar) {
         cur.v2 = nextV2.clone();
         cur.vi2 = nextVi2;
+        if (next.faceIndices) {
+          cur.faceIndices.push(...next.faceIndices);
+        } else {
+          cur.faceIndices.push(next.faceIdx1, next.faceIdx2);
+        }
       } else {
         working.push(cur);
         cur = {
@@ -507,6 +598,7 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
           vi2: nextVi2,
           faceIdx1: next.faceIdx1,
           faceIdx2: next.faceIdx2,
+          faceIndices: next.faceIndices ? [...next.faceIndices] : [next.faceIdx1, next.faceIdx2],
           opp1Idx: next.opp1Idx,
           opp2Idx: next.opp2Idx,
           isConvex: next.isConvex,
@@ -541,6 +633,84 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
   }
 
   return { edges: newEdges, chains: newChains };
+}
+
+/**
+ * Cluster mesh triangles into logical smooth/planar surfaces separated by sharp dihedral creases,
+ * and map each surface to the sharp edges bordering it.
+ */
+function buildSurfaces(faces, faceNormals, edgeAdjacency, sharpEdges, thresholdRad) {
+  const nFaces = faces.length;
+  const faceToSurface = new Int32Array(nFaces).fill(-1);
+  if (nFaces === 0) return { surfaces: [], faceToSurface };
+
+  const faceNeighbors = Array.from({ length: nFaces }, () => []);
+  for (const [, flist] of edgeAdjacency) {
+    if (flist.length === 2) {
+      faceNeighbors[flist[0]].push(flist[1]);
+      faceNeighbors[flist[1]].push(flist[0]);
+    }
+  }
+
+  const smoothCos = Math.cos(Math.max(thresholdRad, 1e-4));
+  const surfaces = [];
+
+  for (let f = 0; f < nFaces; f++) {
+    if (faceToSurface[f] >= 0) continue;
+    const sId = surfaces.length;
+    const queue = [f];
+    faceToSurface[f] = sId;
+    const faceIndices = [f];
+    const avgNormal = new THREE.Vector3();
+    if (faceNormals[f]) avgNormal.add(faceNormals[f]);
+
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      const curN = faceNormals[cur];
+      if (!curN) continue;
+      for (const nb of faceNeighbors[cur]) {
+        if (faceToSurface[nb] >= 0) continue;
+        const nbN = faceNormals[nb];
+        if (nbN && curN.dot(nbN) >= smoothCos) {
+          faceToSurface[nb] = sId;
+          faceIndices.push(nb);
+          avgNormal.add(nbN);
+          queue.push(nb);
+        }
+      }
+    }
+
+    if (avgNormal.lengthSq() > 1e-12) {
+      avgNormal.normalize();
+    } else {
+      avgNormal.set(0, 1, 0);
+    }
+
+    surfaces.push({
+      id: sId,
+      faceIndices,
+      edgeIndices: [],
+      normal: avgNormal,
+    });
+  }
+
+  const surfaceEdgeSets = surfaces.map(() => new Set());
+  for (let eIdx = 0; eIdx < sharpEdges.length; eIdx++) {
+    const e = sharpEdges[eIdx];
+    const adjFaces = e.faceIndices || [e.faceIdx1, e.faceIdx2];
+    for (const fIdx of adjFaces) {
+      if (fIdx === undefined || fIdx < 0 || fIdx >= nFaces) continue;
+      const sId = faceToSurface[fIdx];
+      if (sId >= 0) surfaceEdgeSets[sId].add(eIdx);
+    }
+  }
+
+  for (let sId = 0; sId < surfaces.length; sId++) {
+    surfaces[sId].edgeIndices = Array.from(surfaceEdgeSets[sId]);
+  }
+
+  return { surfaces, faceToSurface };
 }
 
 /**
@@ -730,6 +900,7 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
         dihedralAngle,
         faceIdx1: f1,
         faceIdx2: f2,
+        faceIndices: [f1, f2],
         selected: true, // Selected by default
       });
     }
@@ -750,6 +921,16 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
   edgeData.filteredCount = Math.max(0, rawCount - filteredEdges.length);
   edgeData.sharpEdges = filteredEdges;
   edgeData.chains = filteredChains;
+
+  const { surfaces, faceToSurface } = buildSurfaces(
+    faces,
+    faceNormals,
+    edgeAdjacency,
+    filteredEdges,
+    thresholdRad
+  );
+  edgeData.surfaces = surfaces;
+  edgeData.faceToSurface = faceToSurface;
 
   // ---- 7. Build High-Visibility LineSegments2 Object ----
   if (filteredEdges.length > 0) {

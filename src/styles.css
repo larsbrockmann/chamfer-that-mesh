@@ -634,6 +634,15 @@ button:disabled {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
+.click-mode-group {
+  flex-wrap: nowrap;
+}
+
+.click-mode-group .segment-btn {
+  padding: 3px 5px;
+  font-size: 0.68rem;
+}
+
 .selection-hint {
   font-size: 0.72rem;
   color: var(--text-secondary);
@@ -709,23 +718,23 @@ button:disabled {
 }
 
 .swatch-selected {
-  background: #00b8f5;
-  box-shadow: 0 0 6px rgba(0, 184, 245, 0.6);
+  background: #00d4ff;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.65);
 }
 
 .swatch-hovered-sel {
-  background: #9efeff;
-  border: 1px solid #ffffff;
-  box-shadow: 0 0 8px rgba(158, 254, 255, 0.95);
+  background: #ff6b38;
+  box-shadow: 0 0 7px rgba(255, 107, 56, 0.8);
 }
 
 .swatch-unselected {
-  background: #6a7c92;
+  background: #333b4d;
+  border: 1px solid #556078;
 }
 
 .swatch-hovered-unsel {
-  background: #ffdf2b;
-  box-shadow: 0 0 6px rgba(255, 223, 43, 0.6);
+  background: #1ff08f;
+  box-shadow: 0 0 7px rgba(31, 240, 143, 0.75);
 }
 
 /* ---- Floating Viewport Edge Hover Badge ---- */
@@ -762,11 +771,19 @@ button:disabled {
 }
 
 .edge-hover-badge.is-selected {
-  border-color: rgba(0, 242, 254, 0.5);
+  border-color: rgba(0, 212, 255, 0.55);
 }
 
 .edge-hover-badge.is-unselected {
   border-color: rgba(255, 223, 43, 0.4);
+}
+
+.edge-hover-badge.is-hover-deselect {
+  border-color: rgba(255, 107, 56, 0.55);
+}
+
+.edge-hover-badge.is-hover-select {
+  border-color: rgba(31, 240, 143, 0.55);
 }
 
 .badge-dot {
@@ -777,13 +794,23 @@ button:disabled {
 }
 
 .badge-dot.dot-selected {
-  background: #00f2fe;
-  box-shadow: 0 0 8px #00f2fe;
+  background: #00d4ff;
+  box-shadow: 0 0 8px #00d4ff;
 }
 
 .badge-dot.dot-unselected {
   background: #ffd829;
   box-shadow: 0 0 8px #ffd829;
+}
+
+.badge-dot.dot-hover-deselect {
+  background: #ff6b38;
+  box-shadow: 0 0 8px #ff6b38;
+}
+
+.badge-dot.dot-hover-select {
+  background: #1ff08f;
+  box-shadow: 0 0 8px #1ff08f;
 }
 
 .badge-action {

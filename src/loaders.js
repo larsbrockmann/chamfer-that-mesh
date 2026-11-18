@@ -241,7 +241,7 @@ function geometryToMesh(geometry) {
   geometry.computeBoundingSphere();
 
   const material = new THREE.MeshStandardMaterial({
-    color: 0x96b3ce,
+    color: 0x8c96a8,
     metalness: 0.28,
     roughness: 0.35,
     flatShading: true,
