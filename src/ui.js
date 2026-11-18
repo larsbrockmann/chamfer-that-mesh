@@ -257,6 +257,24 @@ export function buildUI(callbacks) {
       <option value="./models/test-library/skadis_t_nut_m3.stl">Skadis M3 T-Nut Insert</option>
       <option value="./models/test-library/hsw_box_holder_frame.stl">HSW Box Holder Frame</option>
       <option value="./models/test-library/gridfinity_ruler_holder.stl">Gridfinity Ruler Holder</option>
+      <option value="./models/test-library/l_bracket_extension.stl">L-Bracket Extension</option>
+      <option value="./models/test-library/spanner_wrench_rail.stl">Spanner Wrench Rail</option>
+      <option value="./models/test-library/parametric_wrench.stl">Parametric Box Wrench</option>
+      <option value="./models/test-library/french_cleat_clamp.stl">French Cleat Clamp Hanger</option>
+      <option value="./models/test-library/din_rail_35mm.stl">DIN Rail (35mm)</option>
+      <option value="./models/test-library/box_clip_clamp.stl">Vegetable Box Clip Clamp</option>
+      <option value="./models/test-library/rod_clamp_m3.stl">RepRack M3 Rod Clamp</option>
+      <option value="./models/test-library/box_lid_clamp.stl">Box Lid Clamp</option>
+      <option value="./models/test-library/snap_clamp_connector.stl">Snap Clamp Connector</option>
+      <option value="./models/test-library/dowel_drill_jig.stl">2x4 Dowel Drill Jig</option>
+      <option value="./models/test-library/router_slot_jig.stl">Router Slot Copy Ring Jig</option>
+      <option value="./models/test-library/melzi_adapter_plate.stl">Melzi Controller Adapter Plate</option>
+      <option value="./models/test-library/riser_stand_foot.stl">Square Riser Stand Foot</option>
+      <option value="./models/test-library/lcd2004_desk_stand.stl">LCD2004 Desk Stand</option>
+      <option value="./models/test-library/mini_floor_stand.stl">Mini Floor Stand</option>
+      <option value="./models/test-library/gridfinity_open_bin_1x1.stl">Gridfinity Open-End Bin (1x1x3)</option>
+      <option value="./models/test-library/proto_board_corner_connector.stl">Prototyping Board Corner Connector</option>
+      <option value="./models/test-library/corner_cable_clip.stl">Corner Cable Clip</option>
     </optgroup>
   `;
   sampleSelect.addEventListener('change', (e) => {
