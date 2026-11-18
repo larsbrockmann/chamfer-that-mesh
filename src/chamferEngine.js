@@ -454,7 +454,7 @@ export function previewChamfer(edgeData, params) {
     });
 
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.renderOrder = 2;
+    mesh.renderOrder = 3;
     group.add(mesh);
   }
 
@@ -466,13 +466,14 @@ export function previewChamfer(edgeData, params) {
       color: 0x7bed9f,
       transparent: true,
       opacity: 0.95,
+      depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -2.0,
       polygonOffsetUnits: -4.0,
     });
 
     const lines = new THREE.LineSegments(lineGeo, lineMat);
-    lines.renderOrder = 3;
+    lines.renderOrder = 4;
     group.add(lines);
   }
 

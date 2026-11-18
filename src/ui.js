@@ -12,9 +12,7 @@
  * @property {(segments: number) => void} onSegmentsChange
  * @property {(preview: boolean) => void} onPreviewToggle
  * @property {() => void} onApplyChamfer
- * @property {(wireframe: boolean) => void} onWireframeToggle
- * @property {(grid: boolean) => void} onGridToggle
- * @property {(axes: boolean) => void} onAxesToggle
+ * @property {(mode: 'solid' | 'mesh' | 'wire') => void} onShadingModeChange
  * @property {(rotationCenter: boolean) => void} onRotationCenterToggle
  * @property {(edges: boolean) => void} onEdgeHighlightToggle
  */
@@ -775,23 +773,53 @@ export function buildUI(callbacks) {
   // ============ VIEW section ============
   const viewSection = section('View & Orientation');
 
-  const wireToggle = toggleRow('Wireframe', false);
-  wireToggle
-    .querySelector('input')
-    .addEventListener('change', (e) => callbacks.onWireframeToggle(e.target.checked));
-  viewSection.appendChild(wireToggle);
+  const shadingRow = el('div', 'control-row');
+  const shadingLbl = el('span', 'control-label', 'Shading');
+  const shadingGroup = el('div', 'segmented-control');
+  shadingGroup.id = 'shading-mode-group';
 
-  const gridToggle = toggleRow('Grid', false);
-  gridToggle
-    .querySelector('input')
-    .addEventListener('change', (e) => callbacks.onGridToggle(e.target.checked));
-  viewSection.appendChild(gridToggle);
+  const solidBtn = document.createElement('button');
+  solidBtn.type = 'button';
+  solidBtn.textContent = 'Solid';
+  solidBtn.className = 'segment-btn';
+  solidBtn.title = 'Clean shaded solid without base mesh lines';
 
-  const axesToggle = toggleRow('Axes', false);
-  axesToggle
-    .querySelector('input')
-    .addEventListener('change', (e) => callbacks.onAxesToggle(e.target.checked));
-  viewSection.appendChild(axesToggle);
+  const meshBtn = document.createElement('button');
+  meshBtn.type = 'button';
+  meshBtn.textContent = 'Mesh';
+  meshBtn.className = 'segment-btn active';
+  meshBtn.title = 'Shaded solid with subtle mesh base wireframe and crease edges';
+
+  const wireBtn = document.createElement('button');
+  wireBtn.type = 'button';
+  wireBtn.textContent = 'Wire';
+  wireBtn.className = 'segment-btn';
+  wireBtn.title = 'Full wireframe view';
+
+  const shadingModeBtns = {
+    solid: solidBtn,
+    mesh: meshBtn,
+    wire: wireBtn,
+  };
+
+  function setShadingMode(mode) {
+    const normalized = shadingModeBtns[mode] ? mode : 'mesh';
+    for (const [key, btn] of Object.entries(shadingModeBtns)) {
+      btn.classList.toggle('active', key === normalized);
+    }
+    callbacks.onShadingModeChange?.(normalized);
+  }
+
+  solidBtn.addEventListener('click', () => setShadingMode('solid'));
+  meshBtn.addEventListener('click', () => setShadingMode('mesh'));
+  wireBtn.addEventListener('click', () => setShadingMode('wire'));
+
+  shadingGroup.appendChild(solidBtn);
+  shadingGroup.appendChild(meshBtn);
+  shadingGroup.appendChild(wireBtn);
+  shadingRow.appendChild(shadingLbl);
+  shadingRow.appendChild(shadingGroup);
+  viewSection.appendChild(shadingRow);
 
   const rotCenterToggle = toggleRow('Rotation Center', false);
   rotCenterToggle
@@ -956,6 +984,7 @@ export function buildUI(callbacks) {
     setUndoRedoState,
     setAngle,
     setSelectionMode,
+    setShadingMode,
     toggleShortcutsPopover,
   };
 }

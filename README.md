@@ -27,49 +27,49 @@ A browser-based 3D studio for adding watertight chamfers, fillets, and hybrid be
 | ![Face Hover Coral-Orange Deselect](docs/images/face-selection-hover-deselect.png) | ![Face Hover Emerald Select](docs/images/face-selection-hover-select.png) | ![Hybrid Bevel Wireframe](docs/images/hybrid-bevel-wireframe.png) |
 | *Warm Coral-Orange (`#ff6b38`) previews adjacent edges to remove* | *Bright Emerald (`#1ff08f`) previews edges to add over Graphite (`#333b4d`)* | *Hybrid profile combining a flat center with curved shoulder transitions* |
 
-| Metabo Base Bracket (Complex 3MF) | Precision 12-Tooth Spur Gear | Mobile Touch Studio |
+| Metabo Base Bracket (Complex 3MF) | Precision 12-Tooth Spur Gear | Subtle `Mesh` Base & Mobile Drawer |
 |:---:|:---:|:---:|
 | ![Metabo Base Chamfered Counterbores](docs/images/metabo-base-chamfered-closeup.png) | ![Tooth Gear Watertight Chamfer](docs/images/spur-gear-chamfered.png) | ![Mobile Bottom Sheet Drawer](docs/images/mobile-layout.png) |
-| *`1.0 mm` chamfer across counterbored holes & U-perimeter (`0` issues)* | *12 involute gear teeth beveled cleanly without spikes* | *Full-height 3D canvas with collapsible mobile bottom-sheet drawer* |
+| *`1.0 mm` chamfer across counterbores & U-perimeter (`0` issues)* | *12 involute gear teeth beveled cleanly without spikes* | *Subtle CAD crease & wireframe base in responsive bottom drawer* |
 
 ## Features
 
-- **STL & 3MF Import / Export:** Exact **1:1 mm** scale with automatic `.3mf` unit normalization (`micron`, `cm`, `inch`, `foot`, `meter` -> `mm`)
-- **Smart Edge & Face Detection:** Dihedral angle slider (`0°–180°`), one-click **Auto Angle Threshold** (`✨ Auto`), **Convex Edges Only**, and experimental **Filter Tiny Edges** (`Combine` | `Ignore` | `Both` + Min Length)
-- **3 Interactive Viewport Click Modes:** Toggle by **Chain Loop** (`L`), **Single Edge** (`S`), or **Face** (`F`, selects/deselects all bordering sharp edges on any surface patch), with automatic hybrid face picking inside face interiors and front-depth occlusion filtering
-- **Intuitive 4-State Semantic Coloring:** Electric Cyan (**Selected**), Warm Coral-Orange (**Hover Deselect `−`**), Dark Graphite (**Unselected**), Bright Emerald-Mint (**Hover Select `+`**) on a neutral machined-aluminum mesh with immediate post-click state confirmation
+- **STL & 3MF Import / Export:** Exact **1:1 mm** scale with automatic `.3mf` unit normalization (`micron`, `cm`, `inch`, `foot`, `meter` -> `mm`), plus **36 sample & test-library models** (`3` built-in demo shapes + `33` Test Library models)
+- **Smart Edge & Face Detection:** Dihedral angle slider (`0°–180°`), one-click **Auto Angle Threshold** (`✨ Auto`), **Convex Edges Only**, degenerate-triangle filtering for reliable post-chamfer bevel edge detection, and experimental **Filter Tiny Edges** (`Combine` | `Ignore` | `Both` + Min Length)
+- **Streamlined Click Modes (`M`):** Toggle between **Smart** (default — clicks edges for tangent-continuous loops or faces for all bordering sharp edges, with front-depth occlusion filtering) and **Single Edge** (individual edge segments only)
+- **Intuitive 4-State Semantic Coloring & Layered Rendering:** Electric Cyan (**Selected**), Warm Coral-Orange (**Hover Deselect `−`**), Dark Graphite (**Unselected**), Bright Emerald-Mint (**Hover Select `+`**) rendered in the transparent pass strictly above subtle CAD **Mesh** base wireframe/crease lines, toggleable with **Overlays (`O`)**
 - **Three Bevel Profiles:** **Chamfer** (flat 45°), **Fillet** (2–12 segment radial arc), and **Hybrid** (3–12 segment flat-arc blend), with live translucent **Preview** ribbons and dynamically expanding width slider (`0.01–100 mm`)
 - **Watertight CSG & Dual-Engine Repair:** Primary **Manifold-3D WebAssembly** CSG with head-to-tail closed loop cutters, **C++ PMP WASM MeshFixer** (`meshfix-wasm`) with watertight passthrough guard & boolean-difference verification, plus **🧹 Clean Parts split button** with crimson 3D loose-part preview (`👁`)
-- **Workspace & Inspection:** 14-light CAD inspection rig, cursor-pivoted turntable orbit, **20-level Undo/Redo** + **Reset to Original**, `Rot X/Y/Z 90°`, **Wireframe / Grid / Axes / Auto Clean-View**, and resizable desktop sidebar
+- **Workspace & Inspection:** 14-light CAD inspection rig, **Shading** switcher (**Solid** | **Mesh** *(default)* | **Wire**), origin-locked 360° pole-crossing orbit with **Rotation Center** gimbal visualizer, **20-level Undo/Redo** + **Reset to Original**, `Rot X/Y/Z 90°`, floating shortcuts bar (`?`), and resizable desktop sidebar
 
 ## Documentation & Wiki
 
 Full guides and feature closeups are published in the [**Documentation Wiki**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki):
 
-- [**UI Tour & Navigation**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/UI-Tour-and-Navigation) — CAD turntable orbit, 14-light inspection rig, resizable sidebar, mobile bottom sheet, and Auto Clean-View.
-- [**Edge Detection & Selection**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Edge-Detection-and-Selection) — Angle threshold, ✨ Auto detection, Filter Tiny Edges, Face picking, and 4-state hover/click coloring.
-- [**Bevel Profiles & Engine**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Bevel-Profiles-and-Engine) — Chamfer, Fillet, and Hybrid profiles, preview ribbons, and the Manifold-3D CSG kernel.
-- [**Mesh Repair & Diagnostics**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Mesh-Repair-and-Diagnostics) — C++ WASM MeshFixer, watertight passthrough guard, bool-diff verification, and loose-part cleanup.
-- [**File Formats & Sample Library**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/File-Formats-and-Sample-Library) — STL/3MF scaling and all 4 built-in demo shapes (**Pyramid**, **Hex Nut**, **Tooth Gear**, **Metabo Base**).
+- [**UI Tour & Navigation**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/UI-Tour-and-Navigation) — Origin-locked 360° orbit navigation, `Rotation Center` visualizer, `Shading` modes (**Solid** / **Mesh** / **Wire**), **Overlays (`O`)**, 14-light inspection rig, resizable sidebar, and mobile bottom sheet.
+- [**Edge Detection & Selection**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Edge-Detection-and-Selection) — Angle threshold, ✨ Auto detection, degenerate filtering & post-chamfer bevel edges, Filter Tiny Edges, **Smart** vs **Single Edge** picking (`M`), and 4-state hover/click coloring.
+- [**Bevel Profiles & Engine**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Bevel-Profiles-and-Engine) — Chamfer, Fillet, and Hybrid profiles, layered preview ribbons, and the Manifold-3D CSG kernel.
+- [**Mesh Repair & Diagnostics**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/Mesh-Repair-and-Diagnostics) — C++ WASM MeshFixer, watertight passthrough guard, bool-diff verification, loose-part cleanup, and the 36-model validation suite.
+- [**File Formats & Sample Library**](https://github.com/larsbrockmann/chamfer-that-mesh/wiki/File-Formats-and-Sample-Library) — STL/3MF scaling, all **3 built-in demo shapes**, and the **33-model Test Library**.
 
 ## Usage
 
-1. Load a model: pick one of the **4 sample models**, click **Import Model**, or drag and drop `.stl` / `.3mf` onto the viewport.
-2. Adjust **Angle Threshold** (or click **✨ Auto**) and click edges, loops, or faces directly in 3D (`L` / `S` / `F`) to refine the selection.
+1. Load a model: pick from the **Sample Models** dropdown (**3 built-in demo shapes** or **33 Test Library models**), click **Import Model**, or drag and drop `.stl` / `.3mf` onto the viewport.
+2. Adjust **Angle Threshold** (or click **✨ Auto**) and click edges, loops, or faces directly in 3D (**`M`** toggles **Smart** / **Single Edge**; **`O`** toggles **Overlays** to inspect bare geometry over subtle **`Mesh`** base lines).
 3. Choose **Chamfer**, **Fillet**, or **Hybrid**, set **Width (mm)** / **Segments**, toggle **Preview** to check cutting envelopes, and click **Apply Chamfer**.
 4. Export the watertight result with **Export STL** or **Export 3MF**.
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Z` / `Cmd+Z` | Undo last bevel, repair, cleanup, or 90° rotation |
-| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
-| `Esc` | Stop / abort a running operation |
+| `M` | Toggle Click Mode: **Smart** / **Single Edge** |
+| `O` | Toggle Viewport **Overlays** (sharp edges, face hover, preview ribbons) |
 | `A` / `Ctrl+A` | Select all detected edges |
 | `C` | Clear edge selection |
 | `I` | Invert edge selection |
-| `H` / `V` / `T` | Select horizontal / vertical / top & bottom edges |
-| `L` / `S` / `F` | Switch Click Mode: Chain Loop / Single Edge / Face |
-| Left-drag / Right-drag / Scroll | Turntable orbit / Pan / Zoom toward cursor |
+| `Ctrl+Z` / `Cmd+Z` | Undo last bevel, repair, cleanup, or 90° rotation |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
+| `Esc` / `?` | Stop in-progress operation or toggle Shortcuts popover |
+| Left-drag / Right-drag / Scroll | 360° origin-locked orbit / Pan / Zoom |
 
 ## Development
 
@@ -79,6 +79,7 @@ Requires Node.js 18+.
 npm install
 npm run dev      # local dev server
 npm run build    # static build in dist/
+npm test         # validate all 36 sample & test-library models
 ```
 
 ## Deploying to GitHub Pages

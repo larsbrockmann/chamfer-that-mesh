@@ -241,11 +241,14 @@ function geometryToMesh(geometry) {
   geometry.computeBoundingSphere();
 
   const material = new THREE.MeshStandardMaterial({
-    color: 0x8c96a8,
-    metalness: 0.28,
-    roughness: 0.35,
+    color: 0x8f99ac,
+    metalness: 0.24,
+    roughness: 0.38,
     flatShading: true,
     side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
 
   const mesh = new THREE.Mesh(geometry, material);

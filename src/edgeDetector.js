@@ -960,7 +960,8 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
       polygonOffset: true,
       polygonOffsetFactor: -3.0,
       polygonOffsetUnits: -6.0,
-      transparent: false,
+      transparent: true,
+      opacity: 1.0,
     });
 
     const lines = new LineSegments2(lineGeo, lineMat);

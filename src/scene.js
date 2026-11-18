@@ -7,7 +7,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export let scene, camera, renderer, controls;
 export const orbitPivot = new THREE.Vector3(0, 0, 0);
-let gridHelper, axesHelper, rotationCenterHelper;
+let rotationCenterHelper;
 
 /**
  * Build an overlay-rendered 3D crosshair + gimbal sphere indicating the active rotation center.
@@ -264,16 +264,6 @@ export function initScene() {
     camera.add(light.target);
   }
 
-  // Grid (default OFF)
-  gridHelper = new THREE.GridHelper(20, 40, 0x3a3a5c, 0x2a2a44);
-  gridHelper.visible = false;
-  scene.add(gridHelper);
-
-  // Axes (default OFF)
-  axesHelper = new THREE.AxesHelper(3);
-  axesHelper.visible = false;
-  scene.add(axesHelper);
-
   // Rotation Center marker (default OFF)
   rotationCenterHelper = createRotationCenterHelper();
   scene.add(rotationCenterHelper);
@@ -292,16 +282,6 @@ export function initScene() {
   resizeObserver.observe(viewport);
 
   return { scene, camera, renderer, controls };
-}
-
-/** Toggle the grid helper visibility */
-export function setGridVisible(visible) {
-  if (gridHelper) gridHelper.visible = visible;
-}
-
-/** Toggle the axes helper visibility */
-export function setAxesVisible(visible) {
-  if (axesHelper) axesHelper.visible = visible;
 }
 
 /** Toggle the 3D rotation center visualizer visibility */

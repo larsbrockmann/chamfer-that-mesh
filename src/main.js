@@ -8,8 +8,6 @@ import {
   camera,
   renderer,
   controls,
-  setGridVisible,
-  setAxesVisible,
   setOrbitPivot,
   setRotationCenterVisible,
 } from './scene.js';
@@ -42,6 +40,7 @@ let initialGeometry = null;
 let currentIsInitial = true;
 let currentEdgeData = null;
 let edgeLinesObject = null;
+let meshBaseLinesGroup = null;
 let faceHighlightMesh = null;
 let highlightedSurfaceId = -1;
 let previewGroup = null;
@@ -116,6 +115,7 @@ function handleUndo() {
   currentIsInitial = prevEntry.isInitial;
 
   syncUndoRedoUI();
+  rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
   showToast('↩ Undone modification (Ctrl+Z)', 'is-selected');
@@ -139,6 +139,7 @@ function handleRedo() {
   currentIsInitial = nextEntry.isInitial;
 
   syncUndoRedoUI();
+  rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
   showToast('↪ Redone modification (Ctrl+Y)', 'is-selected');
@@ -157,6 +158,7 @@ function handleResetModel() {
   currentIsInitial = true;
 
   syncUndoRedoUI();
+  rebuildMeshBaseLines();
   handleDetectEdges();
   showToast('↺ Restored original model (Ctrl+Z to undo)', 'is-selected');
 }
@@ -171,6 +173,7 @@ let chamferSegments = 1;
 let chamferProfile = 'chamfer'; // 'chamfer' | 'fillet' | 'hybrid'
 let showPreview = false;
 let showEdgeHighlight = true;
+let shadingMode = 'mesh'; // 'solid' | 'mesh' | 'wire'
 let selectionMode = 'smart'; // 'smart' | 'single'
 let loopSelectionMode = true; // synced: true when selectionMode === 'smart'
 let autoFixMesh = false;
@@ -275,11 +278,7 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
   onRunMeshFixer: handleRunMeshFixer,
   onToggleLoosePartsPreview: handleToggleLoosePartsPreview,
   onCleanUnconnectedParts: handleCleanUnconnectedParts,
-  onWireframeToggle: (v) => {
-    if (currentMesh) currentMesh.material.wireframe = v;
-  },
-  onGridToggle: setGridVisible,
-  onAxesToggle: setAxesVisible,
+  onShadingModeChange: applyShadingMode,
   onRotationCenterToggle: setRotationCenterVisible,
   onRecenter: () => {
     if (!currentMesh) return;
@@ -321,7 +320,8 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
     controls.target.set(0, 0, 0);
     setOrbitPivot(new THREE.Vector3(0, 0, 0), false);
 
-    // Re-detect sharp edges and update preview
+    // Re-build subtle mesh base lines, re-detect sharp edges and update preview
+    rebuildMeshBaseLines();
     handleDetectEdges();
   },
   onEdgeHighlightToggle: (v) => setOverlaysVisible(v, false),
@@ -349,6 +349,7 @@ function onModelLoaded(mesh) {
     currentMesh.material.dispose();
   }
   removeEdgeLines();
+  removeMeshBaseLines();
   removePreview();
   hideLoosePartsPreview();
 
@@ -360,7 +361,9 @@ function onModelLoaded(mesh) {
   showPreview = false;
   setPreviewToggleUI(false);
   syncUndoRedoUI();
+  currentMesh.material.wireframe = shadingMode === 'wire';
   scene.add(currentMesh);
+  rebuildMeshBaseLines();
 
   // Focus camera on object geometric center
   const box = new THREE.Box3().setFromObject(currentMesh);
@@ -412,6 +415,119 @@ function handleAutoAngle(silent = false) {
     if (!silent) {
       showToast(`✨ Auto angle threshold: ${optimalAngle}°`, 'is-selected');
     }
+  }
+}
+
+/**
+ * Dispose and remove the subtle mesh-base wireframe & crease line group from the scene.
+ */
+function removeMeshBaseLines() {
+  if (meshBaseLinesGroup) {
+    scene.remove(meshBaseLinesGroup);
+    meshBaseLinesGroup.traverse((child) => {
+      if (child.isLineSegments || child.isLine || child.isMesh) {
+        child.geometry?.dispose();
+        if (Array.isArray(child.material)) {
+          child.material.forEach((m) => m?.dispose());
+        } else {
+          child.material?.dispose();
+        }
+      }
+    });
+    meshBaseLinesGroup = null;
+  }
+}
+
+/**
+ * Compute adaptive subtle triangle-wireframe opacity based on triangle count so
+ * low/medium CAD meshes show topology while dense meshes never turn muddy.
+ * @param {number} triCount
+ * @returns {number}
+ */
+function computeSubtleWireOpacity(triCount) {
+  if (triCount <= 4000) return 0.11;
+  if (triCount <= 25000) {
+    return 0.11 - ((triCount - 4000) / (25000 - 4000)) * (0.11 - 0.06);
+  }
+  if (triCount <= 75000) {
+    return 0.06 - ((triCount - 25000) / (75000 - 25000)) * (0.06 - 0.03);
+  }
+  return 0;
+}
+
+/**
+ * Rebuild the subtle CAD-style mesh base overlay (faint triangles + crease edges).
+ */
+function rebuildMeshBaseLines() {
+  removeMeshBaseLines();
+  if (!currentMesh || !currentMesh.geometry || shadingMode !== 'mesh') return;
+
+  const geo = currentMesh.geometry;
+  const posAttr = geo.getAttribute('position');
+  if (!posAttr) return;
+
+  const triCount = geo.index
+    ? Math.floor(geo.index.count / 3)
+    : Math.floor(posAttr.count / 3);
+  if (triCount <= 0) return;
+
+  const group = new THREE.Group();
+  group.name = 'meshBaseLines';
+
+  const wireOpacity = computeSubtleWireOpacity(triCount);
+  if (wireOpacity > 0) {
+    const wireGeo = new THREE.WireframeGeometry(geo);
+    const wireMat = new THREE.LineBasicMaterial({
+      color: 0x111a2c,
+      transparent: true,
+      opacity: wireOpacity,
+      depthTest: true,
+      depthWrite: false,
+    });
+    const wireLines = new THREE.LineSegments(wireGeo, wireMat);
+    wireLines.name = 'meshBaseWire';
+    wireLines.renderOrder = 1;
+    wireLines.raycast = () => {};
+    group.add(wireLines);
+  }
+
+  const creaseGeo = new THREE.EdgesGeometry(geo, 14);
+  const creaseMat = new THREE.LineBasicMaterial({
+    color: 0x0b1120,
+    transparent: true,
+    opacity: 0.42,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const creaseLines = new THREE.LineSegments(creaseGeo, creaseMat);
+  creaseLines.name = 'meshCreaseLines';
+  creaseLines.renderOrder = 2;
+  creaseLines.raycast = () => {};
+  group.add(creaseLines);
+
+  group.position.copy(currentMesh.position);
+  group.quaternion.copy(currentMesh.quaternion);
+  group.scale.copy(currentMesh.scale);
+  group.visible = shadingMode === 'mesh';
+
+  meshBaseLinesGroup = group;
+  scene.add(meshBaseLinesGroup);
+}
+
+/**
+ * Apply the active viewport shading mode ('solid' | 'mesh' | 'wire').
+ * @param {'solid'|'mesh'|'wire'} mode
+ */
+function applyShadingMode(mode) {
+  shadingMode = mode === 'solid' || mode === 'wire' ? mode : 'mesh';
+  if (currentMesh?.material) {
+    currentMesh.material.wireframe = shadingMode === 'wire';
+  }
+  if (shadingMode === 'mesh' && currentMesh && !meshBaseLinesGroup) {
+    rebuildMeshBaseLines();
+  }
+  if (meshBaseLinesGroup) {
+    meshBaseLinesGroup.visible = shadingMode === 'mesh';
   }
 }
 
@@ -1016,11 +1132,13 @@ function handleToggleLoosePartsPreview() {
     opacity: 0.88,
     side: THREE.DoubleSide,
     depthTest: true,
+    depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -3,
     polygonOffsetUnits: -6,
   });
   const looseMesh = new THREE.Mesh(looseInfo.geometry, looseMat);
+  looseMesh.renderOrder = 7;
   looseMesh.raycast = () => {};
   loosePartsPreviewGroup.add(looseMesh);
 
@@ -1030,13 +1148,18 @@ function handleToggleLoosePartsPreview() {
     color: 0xffffff,
     transparent: true,
     opacity: 0.95,
+    depthWrite: false,
   });
   const wire = new THREE.LineSegments(wireGeo, wireMat);
+  wire.renderOrder = 8;
   wire.raycast = () => {};
   loosePartsPreviewGroup.add(wire);
 
   // Bright yellow BoxHelper around the loose components
   const boxHelper = new THREE.BoxHelper(looseMesh, 0xffea00);
+  boxHelper.material.transparent = true;
+  boxHelper.material.depthWrite = false;
+  boxHelper.renderOrder = 9;
   boxHelper.raycast = () => {};
   loosePartsPreviewGroup.add(boxHelper);
 
@@ -1082,7 +1205,8 @@ function finalizeReplacedGeometry(nextGeometry, options = {}) {
     setPreviewToggleUI(false);
   }
 
-  // Keep edge highlight always visible
+  // Rebuild subtle mesh base lines and keep edge highlight visible
+  rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
 }
