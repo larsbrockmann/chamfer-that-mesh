@@ -4,18 +4,33 @@
 import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { unzipSync, strFromU8 } from 'three/addons/libs/fflate.module.js';
+import {
+  getFastMeshTopology,
+  buildIndexedGeometryFromTopology,
+  invalidateMeshTopology,
+} from './meshTopology.js';
 
 // 3MFLoader is a heavier addon; we import it lazily to avoid bundling if unused
 let ThreeMFLoaderClass = null;
+
+function waitForPaint() {
+  if (typeof requestAnimationFrame === 'function') {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
+  }
+  return Promise.resolve();
+}
 
 /**
  * Setup drag-and-drop + file-picker import.
  * @param {HTMLElement} dropTarget  — element for drag events (the viewport div)
  * @param {HTMLInputElement|null} fileInput — optional hidden file input
  * @param {(mesh: THREE.Mesh) => void} onLoaded — callback with the loaded mesh
+ * @param {(err: Error) => void} [onError]
+ * @param {(fileName: string) => void} [onLoadStart]
  */
-export function setupLoaders(dropTarget, fileInput, onLoaded, onError) {
-
+export function setupLoaders(dropTarget, fileInput, onLoaded, onError, onLoadStart) {
   const overlay = document.getElementById('drop-overlay');
 
   // ---- Drag & Drop ----
@@ -45,7 +60,7 @@ export function setupLoaders(dropTarget, fileInput, onLoaded, onError) {
     overlay.classList.remove('visible');
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
-      handleFile(files[0], onLoaded, onError);
+      handleFile(files[0], onLoaded, onError, onLoadStart);
     }
   });
 
@@ -53,7 +68,7 @@ export function setupLoaders(dropTarget, fileInput, onLoaded, onError) {
   if (fileInput) {
     fileInput.addEventListener('change', () => {
       if (fileInput.files && fileInput.files.length > 0) {
-        handleFile(fileInput.files[0], onLoaded, onError);
+        handleFile(fileInput.files[0], onLoaded, onError, onLoadStart);
         fileInput.value = ''; // reset so same file can be re-selected
       }
     });
@@ -63,11 +78,13 @@ export function setupLoaders(dropTarget, fileInput, onLoaded, onError) {
 /**
  * Process a dropped/picked file.
  */
-function handleFile(file, onLoaded, onError) {
+function handleFile(file, onLoaded, onError, onLoadStart) {
   const name = file.name.toLowerCase();
   if (name.endsWith('.stl')) {
+    onLoadStart?.(file.name);
     loadSTL(file, onLoaded, onError);
   } else if (name.endsWith('.3mf')) {
+    onLoadStart?.(file.name);
     load3MF(file, onLoaded, onError);
   } else {
     const msg = `Unsupported file format: ${file.name}. Use .stl or .3mf.`;
@@ -81,16 +98,17 @@ function loadSTL(file, onLoaded, onError) {
   reader.onerror = () => {
     if (onError) onError(new Error(`Failed to read file: ${file.name}`));
   };
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
+      await waitForPaint();
       const loader = new STLLoader();
       const geometry = loader.parse(e.target.result);
       const pos = geometry.getAttribute('position');
       if (!pos || pos.count === 0) {
         throw new Error('STL file contains no geometry.');
       }
-      const mesh = geometryToMesh(geometry);
-      onLoaded(mesh);
+      const mesh = geometryToMesh(geometry, file.name);
+      await onLoaded(mesh);
     } catch (err) {
       console.error('Failed to parse STL:', err);
       if (onError) onError(err);
@@ -146,8 +164,9 @@ async function load3MF(file, onLoaded, onError) {
     reader.onerror = () => {
       if (onError) onError(new Error(`Failed to read file: ${file.name}`));
     };
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
+        await waitForPaint();
         const loader = new ThreeMFLoaderClass();
         const group = loader.parse(e.target.result);
         // ThreeMFLoader returns a Group — extract all Mesh children
@@ -184,8 +203,8 @@ async function load3MF(file, onLoaded, onError) {
           targetGeo.scale(unitScale, unitScale, unitScale);
         }
 
-        const mesh = geometryToMesh(targetGeo);
-        onLoaded(mesh);
+        const mesh = geometryToMesh(targetGeo, file.name);
+        await onLoaded(mesh);
       } catch (err) {
         console.error('Failed to parse 3MF:', err);
         if (onError) onError(err);
@@ -224,21 +243,37 @@ function mergeGeometriesList(geometries) {
 }
 
 /**
- * Create a Mesh from BufferGeometry: center at geometric center, compute normals.
+ * Create a Mesh from BufferGeometry: convert dense raw STLs to indexed GPU buffers,
+ * center at geometric center, and compute normals.
  */
-function geometryToMesh(geometry) {
-  geometry.computeVertexNormals();
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
+function geometryToMesh(geometry, fileName = '') {
+  let finalGeo = geometry;
+  const posAttr = geometry.getAttribute('position');
+  const triCount = geometry.index
+    ? Math.floor(geometry.index.count / 3)
+    : posAttr
+      ? Math.floor(posAttr.count / 3)
+      : 0;
 
-  // Center geometry at its bounding-box midpoint (keeps 1:1 real-world millimeters)
-  const center = new THREE.Vector3();
-  geometry.boundingBox.getCenter(center);
-  geometry.translate(-center.x, -center.y, -center.z);
+  if (!geometry.index && triCount > 15000) {
+    const topo = getFastMeshTopology(geometry);
+    finalGeo = buildIndexedGeometryFromTopology(topo, { center: true });
+    invalidateMeshTopology(geometry);
+    geometry.dispose();
+  } else {
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
 
-  // Recompute bounding box & sphere
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
+    // Center geometry at its bounding-box midpoint (keeps 1:1 real-world millimeters)
+    const center = new THREE.Vector3();
+    geometry.boundingBox.getCenter(center);
+    geometry.translate(-center.x, -center.y, -center.z);
+
+    // Recompute bounding box & sphere
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+  }
 
   const material = new THREE.MeshStandardMaterial({
     color: 0x8f99ac,
@@ -251,24 +286,34 @@ function geometryToMesh(geometry) {
     polygonOffsetUnits: 1,
   });
 
-  const mesh = new THREE.Mesh(geometry, material);
+  const mesh = new THREE.Mesh(finalGeo, material);
   mesh.name = 'loadedModel';
+  mesh.userData.fileName = fileName;
   return mesh;
 }
 
 /**
  * Load a model directly from a URL.
  */
-export function loadFromUrl(url, onLoaded, onError) {
+export function loadFromUrl(url, onLoaded, onError, onLoadStart) {
+  const filename = url.split('/').pop() || 'model.stl';
+  onLoadStart?.(filename);
   fetch(url)
     .then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status} while loading ${url}`);
       return r.blob();
     })
     .then((blob) => {
-      const filename = url.split('/').pop() || 'model.stl';
       const file = new File([blob], filename);
-      handleFile(file, onLoaded, onError);
+      // Skip duplicate onLoadStart inside handleFile since already notified
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.stl')) {
+        loadSTL(file, onLoaded, onError);
+      } else if (name.endsWith('.3mf')) {
+        load3MF(file, onLoaded, onError);
+      } else {
+        handleFile(file, onLoaded, onError);
+      }
     })
     .catch((err) => {
       console.error('Failed to load model from URL:', err);

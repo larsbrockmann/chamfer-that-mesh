@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { Brush, Evaluator, SUBTRACTION, ADDITION } from 'three-bvh-csg';
 import { getManifold } from './manifoldEngine.js';
+import { getFastMeshTopology } from './meshTopology.js';
 
 /**
  * Parameters for the chamfer / fillet / hybrid operation.
@@ -134,6 +135,41 @@ function buildVertexWallNormals(edges, edgeData) {
   }
 
   const vertWallNormals = new Map();
+  if (edgeData?.triIndices && edgeData?.faceNormalCoords) {
+    const tris = edgeData.triIndices;
+    const fns = edgeData.faceNormalCoords;
+    const faceCount = Math.floor(tris.length / 3);
+    for (let f = 0; f < faceCount; f++) {
+      const fBase = f * 3;
+      const a = tris[fBase];
+      const b = tris[fBase + 1];
+      const c = tris[fBase + 2];
+      if (!neededVerts.has(a) && !neededVerts.has(b) && !neededVerts.has(c)) continue;
+      const nx = fns[fBase];
+      const ny = fns[fBase + 1];
+      const nz = fns[fBase + 2];
+      if (nx === 0 && ny === 0 && nz === 0) continue;
+
+      for (const vi of [a, b, c]) {
+        if (!neededVerts.has(vi)) continue;
+        let list = vertWallNormals.get(vi);
+        if (!list) {
+          list = [];
+          vertWallNormals.set(vi, list);
+        }
+        let duplicate = false;
+        for (const existing of list) {
+          if (existing.x * nx + existing.y * ny + existing.z * nz > 0.9999) {
+            duplicate = true;
+            break;
+          }
+        }
+        if (!duplicate) list.push(new THREE.Vector3(nx, ny, nz));
+      }
+    }
+    return vertWallNormals;
+  }
+
   if (!edgeData?.faces || !edgeData?.faceNormals) return vertWallNormals;
 
   for (let f = 0; f < edgeData.faces.length; f++) {
@@ -172,12 +208,50 @@ function buildVertexWallNormals(edges, edgeData) {
 function buildVertexChamferFrames(edges, edgeData) {
   const baseFrames = new Array(edges.length).fill(null);
   const incidentByVert = new Map();
+  const hasTypedTris = !!(edgeData?.triIndices && edgeData?.vertCoords && edgeData?.faceNormalCoords);
+
+  const getTriOppositeVert = (faceIdx, vi1, vi2, outPos) => {
+    if (hasTypedTris) {
+      const fBase = faceIdx * 3;
+      const a = edgeData.triIndices[fBase];
+      const b = edgeData.triIndices[fBase + 1];
+      const c = edgeData.triIndices[fBase + 2];
+      const opp = a !== vi1 && a !== vi2 ? a : b !== vi1 && b !== vi2 ? b : c !== vi1 && c !== vi2 ? c : -1;
+      if (opp >= 0) {
+        const vo = opp * 3;
+        outPos.set(edgeData.vertCoords[vo], edgeData.vertCoords[vo + 1], edgeData.vertCoords[vo + 2]);
+        return true;
+      }
+      return false;
+    }
+    const tri = edgeData.faces?.[faceIdx];
+    if (!tri) return false;
+    const opp = tri.find((i) => i !== vi1 && i !== vi2);
+    if (opp !== undefined && edgeData.vertices?.[opp]) {
+      outPos.copy(edgeData.vertices[opp]);
+      return true;
+    }
+    return false;
+  };
+
+  const oppPos = new THREE.Vector3();
 
   for (let idx = 0; idx < edges.length; idx++) {
     const edge = edges[idx];
     const { v1, v2, faceIdx1, faceIdx2, vi1, vi2 } = edge;
-    const n1 = edgeData.faceNormals[faceIdx1];
-    const n2 = edgeData.faceNormals[faceIdx2];
+    let n1 = null;
+    let n2 = null;
+    if (edgeData.faceNormalCoords) {
+      const o1 = faceIdx1 * 3;
+      const o2 = faceIdx2 * 3;
+      if (o1 + 2 < edgeData.faceNormalCoords.length && o2 + 2 < edgeData.faceNormalCoords.length) {
+        n1 = new THREE.Vector3(edgeData.faceNormalCoords[o1], edgeData.faceNormalCoords[o1 + 1], edgeData.faceNormalCoords[o1 + 2]);
+        n2 = new THREE.Vector3(edgeData.faceNormalCoords[o2], edgeData.faceNormalCoords[o2 + 1], edgeData.faceNormalCoords[o2 + 2]);
+      }
+    } else {
+      n1 = edgeData.faceNormals?.[faceIdx1];
+      n2 = edgeData.faceNormals?.[faceIdx2];
+    }
     if (!n1 || !n2) continue;
 
     const edgeVec = new THREE.Vector3().subVectors(v2, v1);
@@ -190,22 +264,24 @@ function buildVertexChamferFrames(edges, edgeData) {
     const inset2 = new THREE.Vector3().crossVectors(edgeDir, n2).normalize();
 
     // Verify inset directions point inward into each respective face
-    const [a, b, c] = edgeData.faces[faceIdx1];
-    const opp1Idx = edge.opp1Idx !== undefined
-      ? edge.opp1Idx
-      : [a, b, c].find((i) => i !== vi1 && i !== vi2);
-    if (opp1Idx !== undefined && edgeData.vertices[opp1Idx]) {
-      const toOpp1 = new THREE.Vector3().subVectors(edgeData.vertices[opp1Idx], mid);
-      if (toOpp1.dot(inset1) < 0) inset1.negate();
+    if (edge.opp1Idx !== undefined && edgeData.vertCoords) {
+      const vo = edge.opp1Idx * 3;
+      oppPos.set(edgeData.vertCoords[vo], edgeData.vertCoords[vo + 1], edgeData.vertCoords[vo + 2]);
+      if (oppPos.sub(mid).dot(inset1) < 0) inset1.negate();
+    } else if (edge.opp1Idx !== undefined && edgeData.vertices?.[edge.opp1Idx]) {
+      if (oppPos.subVectors(edgeData.vertices[edge.opp1Idx], mid).dot(inset1) < 0) inset1.negate();
+    } else if (getTriOppositeVert(faceIdx1, vi1, vi2, oppPos)) {
+      if (oppPos.sub(mid).dot(inset1) < 0) inset1.negate();
     }
 
-    const [d, e, f] = edgeData.faces[faceIdx2];
-    const opp2Idx = edge.opp2Idx !== undefined
-      ? edge.opp2Idx
-      : [d, e, f].find((i) => i !== vi1 && i !== vi2);
-    if (opp2Idx !== undefined && edgeData.vertices[opp2Idx]) {
-      const toOpp2 = new THREE.Vector3().subVectors(edgeData.vertices[opp2Idx], mid);
-      if (toOpp2.dot(inset2) < 0) inset2.negate();
+    if (edge.opp2Idx !== undefined && edgeData.vertCoords) {
+      const vo = edge.opp2Idx * 3;
+      oppPos.set(edgeData.vertCoords[vo], edgeData.vertCoords[vo + 1], edgeData.vertCoords[vo + 2]);
+      if (oppPos.sub(mid).dot(inset2) < 0) inset2.negate();
+    } else if (edge.opp2Idx !== undefined && edgeData.vertices?.[edge.opp2Idx]) {
+      if (oppPos.subVectors(edgeData.vertices[edge.opp2Idx], mid).dot(inset2) < 0) inset2.negate();
+    } else if (getTriOppositeVert(faceIdx2, vi1, vi2, oppPos)) {
+      if (oppPos.sub(mid).dot(inset2) < 0) inset2.negate();
     }
 
     const cornerNorm = new THREE.Vector3().addVectors(n1, n2);
@@ -1080,6 +1156,54 @@ export function applyChamfer(geometry, edgeData, params) {
  * and build a valid 2-manifold solid for Manifold CSG.
  */
 function buildManifoldSolid(Manifold, Mesh, geoOrPositions, tolerances = [1e-5, 1e-4]) {
+  if (geoOrPositions && !(geoOrPositions instanceof Float32Array) && geoOrPositions.getAttribute) {
+    try {
+      const topo = getFastMeshTopology(geoOrPositions);
+      if (topo && topo.triCount >= 4 && topo.openEdges === 0 && topo.nonManifoldEdges === 0) {
+        const srcTris = topo.triIndices;
+        let validCount = 0;
+        for (let f = 0; f < topo.triCount; f++) {
+          const o = f * 3;
+          const a = srcTris[o];
+          const b = srcTris[o + 1];
+          const c = srcTris[o + 2];
+          if (a !== b && b !== c && c !== a) validCount++;
+        }
+        if (validCount >= 4) {
+          const flipWinding = topo.signedVolume < 0;
+          const triVerts = new Uint32Array(validCount * 3);
+          let ptr = 0;
+          for (let f = 0; f < topo.triCount; f++) {
+            const o = f * 3;
+            const a = srcTris[o];
+            const b = srcTris[o + 1];
+            const c = srcTris[o + 2];
+            if (a === b || b === c || c === a) continue;
+            triVerts[ptr++] = a;
+            if (flipWinding) {
+              triVerts[ptr++] = c;
+              triVerts[ptr++] = b;
+            } else {
+              triVerts[ptr++] = b;
+              triVerts[ptr++] = c;
+            }
+          }
+          const mesh = new Mesh({
+            numProp: 3,
+            vertProperties: topo.vertCoords,
+            triVerts,
+          });
+          const mf = new Manifold(mesh);
+          if (mf.status() === 'NoError' && mf.numTri() > 0) {
+            return mf;
+          }
+        }
+      }
+    } catch (_) {
+      /* Fall back to tolerance merge path */
+    }
+  }
+
   const posOnly = new THREE.BufferGeometry();
   let tempNonIdx = null;
   if (geoOrPositions instanceof Float32Array) {

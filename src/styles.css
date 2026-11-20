@@ -1599,3 +1599,177 @@ button.is-busy {
     padding: 4px 8px;
   }
 }
+
+/* ---- Mesh Optimization & Simplify Modal ---- */
+
+.btn-optimize-suggested {
+  background: rgba(0, 212, 255, 0.14);
+  border: 1px solid rgba(0, 212, 255, 0.55);
+  color: var(--accent);
+}
+
+.btn-optimize-suggested:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.24);
+  border-color: var(--accent);
+}
+
+.simplify-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 12, 18, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.simplify-modal[hidden] {
+  display: none;
+}
+
+.simplify-modal-card {
+  width: min(460px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  background: rgba(24, 26, 36, 0.98);
+  border: 1px solid rgba(0, 212, 255, 0.42);
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6), 0 0 28px rgba(0, 212, 255, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.simplify-modal-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.simplify-modal-icon {
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.simplify-modal-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.simplify-modal-subtitle {
+  margin: 3px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.simplify-modal-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.simplify-stat-pill {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+
+.simplify-stat-label {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.simplify-stat-val {
+  display: block;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.simplify-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.simplify-preset-card {
+  width: 100%;
+  text-align: left;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.simplify-preset-card:hover {
+  border-color: rgba(0, 212, 255, 0.45);
+  background: rgba(0, 212, 255, 0.06);
+}
+
+.simplify-preset-card.active {
+  border-color: var(--accent);
+  background: rgba(0, 212, 255, 0.12);
+}
+
+.simplify-preset-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.simplify-preset-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.simplify-preset-badge {
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(0, 212, 255, 0.2);
+  color: var(--accent);
+}
+
+.simplify-preset-desc {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.simplify-modal-note {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+  border-left: 2px solid var(--accent);
+  padding: 6px 9px;
+  border-radius: 4px;
+  line-height: 1.35;
+}
+
+.simplify-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.simplify-modal-actions button {
+  width: auto;
+  min-width: 118px;
+}

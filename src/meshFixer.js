@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
 import { repairMeshWasm, isWasmMeshFixSupported } from './wasmMeshFix.js';
+import { getFastMeshTopology, analyzeConnectedComponentsFast } from './meshTopology.js';
 
 /**
  * Extract raw vertex array and triangle index triples via boundary-safe
@@ -269,21 +270,39 @@ export function analyzeMesh(geometry) {
     };
   }
 
-  const { vertices, tris } = extractWeldedMesh(geometry, 1e-5);
-  const topo = buildTopology(vertices, tris);
-  const loops = traceHoleLoops(vertices, topo.openHalfEdges);
-  const closedLoops = loops.filter((l) => l.closed).length;
-  const holeLoops = closedLoops > 0 ? closedLoops : (topo.openEdges > 0 ? loops.length : 0);
-  const components = findConnectedComponents(vertices, tris);
-  const removable = components.filter((c) => c.isRemovable);
-  const disconnectedParts = removable.length;
-  let disconnectedTriangles = 0;
-  for (const c of removable) disconnectedTriangles += c.triCount;
-  const issueCount =
-    topo.openEdges +
-    topo.nonManifoldEdges +
-    topo.degenerateTriangles +
-    disconnectedParts;
+  const topo = getFastMeshTopology(geometry);
+  let holeLoops = 0;
+
+  if (topo.openEdges > 0) {
+    const openHalfEdges = [];
+    const boundaryVerts = [];
+    const { eV1, eV2, eF1, eCount, eDirMask, edgeSlots, vertCoords } = topo;
+    for (let i = 0; i < edgeSlots.length; i++) {
+      const slot = edgeSlots[i];
+      if (eCount[slot] !== 1) continue;
+      const lo = eV1[slot];
+      const hi = eV2[slot];
+      const tri = eF1[slot];
+      if (!boundaryVerts[lo]) {
+        const o = lo * 3;
+        boundaryVerts[lo] = { x: vertCoords[o], y: vertCoords[o + 1], z: vertCoords[o + 2] };
+      }
+      if (!boundaryVerts[hi]) {
+        const o = hi * 3;
+        boundaryVerts[hi] = { x: vertCoords[o], y: vertCoords[o + 1], z: vertCoords[o + 2] };
+      }
+      if ((eDirMask[slot] & 1) !== 0) {
+        openHalfEdges.push([lo, hi, tri]);
+      } else {
+        openHalfEdges.push([hi, lo, tri]);
+      }
+    }
+    const loops = traceHoleLoops(boundaryVerts, openHalfEdges);
+    const closedLoops = loops.filter((l) => l.closed).length;
+    holeLoops = closedLoops > 0 ? closedLoops : loops.length;
+  }
+
+  const { disconnectedParts, disconnectedTriangles } = analyzeConnectedComponentsFast(topo);
 
   return {
     openEdges: topo.openEdges,
@@ -292,7 +311,8 @@ export function analyzeMesh(geometry) {
     degenerateTriangles: topo.degenerateTriangles,
     disconnectedParts,
     disconnectedTriangles,
-    isWatertight: topo.openEdges === 0 && topo.nonManifoldEdges === 0 && disconnectedParts === 0,
+    isWatertight:
+      topo.openEdges === 0 && topo.nonManifoldEdges === 0 && disconnectedParts === 0,
     issueCount: topo.openEdges + topo.nonManifoldEdges + disconnectedParts,
   };
 }

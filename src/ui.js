@@ -1,6 +1,7 @@
 /* ============================================================
    ui.js — Build the sidebar UI panel
    ============================================================ */
+import { SIMPLIFY_PRESETS } from './meshSimplifier.js';
 
 /**
  * @typedef {Object} UICallbacks
@@ -12,6 +13,10 @@
  * @property {(segments: number) => void} onSegmentsChange
  * @property {(preview: boolean) => void} onPreviewToggle
  * @property {() => void} onApplyChamfer
+ * @property {() => void} onRunMeshFixer
+ * @property {() => void} onCleanUnconnectedParts
+ * @property {() => void} onToggleLoosePartsPreview
+ * @property {() => void} onSimplifyMesh
  * @property {(mode: 'solid' | 'mesh' | 'wire') => void} onShadingModeChange
  * @property {(rotationCenter: boolean) => void} onRotationCenterToggle
  * @property {(edges: boolean) => void} onEdgeHighlightToggle
@@ -768,6 +773,16 @@ export function buildUI(callbacks) {
   fixerRow.appendChild(cleanGroup);
   chamferSection.appendChild(fixerRow);
 
+  const optRow = el('div', 'selection-btn-row');
+  optRow.style.marginTop = '5px';
+  const simplifyBtn = button('⚡ Simplify Mesh', 'btn-secondary btn-small');
+  simplifyBtn.id = 'simplify-mesh-btn';
+  simplifyBtn.disabled = true;
+  simplifyBtn.title = 'Reduce redundant triangles while preserving sharp edges and CAD precision (undoable)';
+  simplifyBtn.addEventListener('click', () => callbacks.onSimplifyMesh && callbacks.onSimplifyMesh());
+  optRow.appendChild(simplifyBtn);
+  chamferSection.appendChild(optRow);
+
   sidebar.appendChild(chamferSection);
 
   // ============ VIEW section ============
@@ -1074,6 +1089,25 @@ export function setLoosePartsPreviewActive(active) {
   }
 }
 
+/**
+ * Update a secondary action button's enabled state and label without being
+ * overwritten when an active `setProcessingState(true)` block ends.
+ */
+function applySecondaryBtnState(btn, disabled, label) {
+  if (!btn) return;
+  if (btn.dataset.prevDisabled !== undefined) {
+    btn.dataset.prevDisabled = disabled ? '1' : '0';
+    if (label !== undefined) {
+      btn.dataset.prevLabel = label;
+    }
+  } else {
+    btn.disabled = disabled;
+    if (label !== undefined) {
+      btn.textContent = label;
+    }
+  }
+}
+
 export function updateMeshHealth(stats) {
   const infoEl = document.getElementById('info-mesh-health');
   const bannerEl = document.getElementById('mesh-health-banner');
@@ -1092,7 +1126,7 @@ export function updateMeshHealth(stats) {
     }
     for (const b of [btnEl, cleanBtnEl, previewBtnEl]) {
       if (b) {
-        b.disabled = true;
+        applySecondaryBtnState(b, true);
         b.classList.remove('btn-warning');
         b.classList.add('btn-secondary');
       }
@@ -1100,9 +1134,9 @@ export function updateMeshHealth(stats) {
     return;
   }
 
-  if (btnEl) btnEl.disabled = false;
-  if (cleanBtnEl) cleanBtnEl.disabled = false;
-  if (previewBtnEl) previewBtnEl.disabled = false;
+  applySecondaryBtnState(btnEl, false);
+  applySecondaryBtnState(cleanBtnEl, false);
+  applySecondaryBtnState(previewBtnEl, false);
 
   if (stats.isWatertight) {
     if (infoEl) {
@@ -1170,11 +1204,182 @@ export function updateMeshHealth(stats) {
 }
 
 /**
+ * Update the sidebar Optimize / Simplify Mesh button state and badge.
+ * @param {object|null} optInfo
+ */
+export function updateOptimizationBanner(optInfo) {
+  const btn = document.getElementById('simplify-mesh-btn');
+  if (!btn) return;
+  if (!optInfo || optInfo.triCount < 12) {
+    applySecondaryBtnState(btn, true, '⚡ Simplify Mesh');
+    btn.classList.remove('btn-optimize-suggested');
+    btn.classList.add('btn-secondary');
+    btn.title = 'Reduce redundant triangles while preserving sharp edges and CAD precision (undoable)';
+    return;
+  }
+  if (optInfo.isUnoptimized) {
+    btn.classList.remove('btn-secondary');
+    btn.classList.add('btn-optimize-suggested');
+    applySecondaryBtnState(btn, false, `⚡ Simplify Mesh (~${optInfo.estimatedReductionPct}% lighter)`);
+    btn.title = `${optInfo.reason} — Click to simplify cleanly`;
+  } else {
+    btn.classList.remove('btn-optimize-suggested');
+    btn.classList.add('btn-secondary');
+    applySecondaryBtnState(btn, false, '⚡ Simplify Mesh');
+    btn.title = `${optInfo.triCount.toLocaleString()} tris (${optInfo.coplanarPct.toFixed(1)}% flat) — Click to simplify cleanly`;
+  }
+}
+
+/**
+ * Show the interactive Unoptimized Mesh / Simplify modal and resolve with user choice.
+ *
+ * @param {object} info
+ * @param {object} [options]
+ * @param {'import'|'manual'} [options.mode='import']
+ * @returns {Promise<{ action: 'simplify' | 'keep', presetId: string, tolerance: number }>}
+ */
+export function showSimplifyModal(info, options = {}) {
+  const modal = document.getElementById('simplify-modal');
+  const titleEl = document.getElementById('simplify-modal-title');
+  const subtitleEl = document.getElementById('simplify-modal-subtitle');
+  const statsEl = document.getElementById('simplify-modal-stats');
+  const presetListEl = document.getElementById('simplify-preset-list');
+  const noteEl = document.getElementById('simplify-modal-note');
+  const keepBtn = document.getElementById('simplify-keep-btn');
+  const confirmBtn = document.getElementById('simplify-confirm-btn');
+
+  if (!modal || !presetListEl || !keepBtn || !confirmBtn) {
+    return Promise.resolve({
+      action: 'keep',
+      presetId: 'high',
+      tolerance: SIMPLIFY_PRESETS.high.tolerance,
+    });
+  }
+
+  const mode = options.mode === 'manual' ? 'manual' : 'import';
+  const fileName = info?.fileName ? `"${info.fileName}" ` : '';
+  const triCount = info?.triCount || 0;
+  const coplanarPct = typeof info?.coplanarPct === 'number' ? info.coplanarPct : 0;
+  const nearFlatPct = typeof info?.nearFlatPct === 'number' ? info.nearFlatPct : 0;
+  const estPct = info?.estimatedReductionPct || 0;
+  const isManifold = info?.isManifold !== false;
+
+  if (titleEl) {
+    titleEl.textContent = mode === 'import' ? 'Unoptimized Mesh Detected' : 'Simplify Mesh';
+  }
+  if (subtitleEl) {
+    subtitleEl.textContent =
+      mode === 'import'
+        ? `${fileName}has dense or redundant flat triangulation (${info?.reason || `${triCount.toLocaleString()} triangles`}).`
+        : `Reduce triangle count cleanly on the active model (${triCount.toLocaleString()} triangles) while preserving sharp edges.`;
+  }
+
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <div class="simplify-stat-pill">
+        <span class="simplify-stat-label">Triangles</span>
+        <span class="simplify-stat-val">${triCount.toLocaleString()}</span>
+      </div>
+      <div class="simplify-stat-pill">
+        <span class="simplify-stat-label">Coplanar Flat</span>
+        <span class="simplify-stat-val">${coplanarPct.toFixed(1)}% <small style="color:var(--text-secondary);font-weight:400">(${nearFlatPct.toFixed(1)}% &lt;2.5°)</small></span>
+      </div>
+      <div class="simplify-stat-pill">
+        <span class="simplify-stat-label">Est. Savings</span>
+        <span class="simplify-stat-val" style="color:var(--accent)">~${estPct}%</span>
+      </div>
+    `;
+  }
+
+  if (noteEl) {
+    noteEl.textContent = isManifold
+      ? 'Manifold WASM merges redundant flat faces within strict tolerance and preserves watertight edges & outward normals.'
+      : 'Open/non-manifold mesh: uses bounded C++ PMP decimation to keep sharp edges & geometry intact.';
+  }
+
+  let selectedPresetId = 'high';
+  const presetOrder = ['high', 'lossless', 'balanced'];
+  presetListEl.innerHTML = '';
+
+  const presetCards = {};
+  for (const id of presetOrder) {
+    const preset = SIMPLIFY_PRESETS[id];
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `simplify-preset-card${id === selectedPresetId ? ' active' : ''}`;
+    card.setAttribute('role', 'radio');
+    card.setAttribute('aria-checked', id === selectedPresetId ? 'true' : 'false');
+    card.dataset.presetId = id;
+    card.innerHTML = `
+      <div class="simplify-preset-head">
+        <span class="simplify-preset-title">${preset.label}</span>
+        ${id === 'high' ? '<span class="simplify-preset-badge">Recommended</span>' : ''}
+      </div>
+      <div class="simplify-preset-desc">${preset.desc}</div>
+    `;
+    card.addEventListener('click', () => {
+      selectedPresetId = id;
+      for (const [pid, btnCard] of Object.entries(presetCards)) {
+        const isAct = pid === id;
+        btnCard.classList.toggle('active', isAct);
+        btnCard.setAttribute('aria-checked', String(isAct));
+      }
+    });
+    presetCards[id] = card;
+    presetListEl.appendChild(card);
+  }
+
+  keepBtn.textContent = mode === 'import' ? 'Keep Original' : 'Cancel';
+  confirmBtn.textContent = mode === 'import' ? '✨ Simplify & Load' : '✨ Simplify Mesh';
+  modal.hidden = false;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      keepBtn.removeEventListener('click', onKeep);
+      confirmBtn.removeEventListener('click', onConfirm);
+      modal.removeEventListener('click', onBackdrop);
+      window.removeEventListener('keydown', onKeyDown, true);
+      modal.hidden = true;
+    };
+    const finish = (action) => {
+      if (settled) return;
+      settled = true;
+      const preset = SIMPLIFY_PRESETS[selectedPresetId] || SIMPLIFY_PRESETS.high;
+      cleanup();
+      resolve({
+        action,
+        presetId: preset.id,
+        tolerance: preset.tolerance,
+      });
+    };
+    const onKeep = () => finish('keep');
+    const onConfirm = () => finish('simplify');
+    const onBackdrop = (e) => {
+      if (e.target === modal) finish('keep');
+    };
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        finish('keep');
+      }
+    };
+
+    keepBtn.addEventListener('click', onKeep);
+    confirmBtn.addEventListener('click', onConfirm);
+    modal.addEventListener('click', onBackdrop);
+    window.addEventListener('keydown', onKeyDown, true);
+    confirmBtn.focus();
+  });
+}
+
+/**
  * Toggle the viewport processing overlay and button busy states.
  * @param {boolean} active
  * @param {string} [title]
  * @param {string} [detail]
- * @param {string} [activeBtnId] - 'apply-chamfer-btn' | 'mesh-fixer-btn'
+ * @param {string} [activeBtnId] - 'apply-chamfer-btn' | 'mesh-fixer-btn' | 'simplify-mesh-btn'
  */
 export function setProcessingState(
   active,
@@ -1200,6 +1405,7 @@ export function setProcessingState(
     { id: 'mesh-fixer-btn', busyLabel: 'Fixing Mesh...', defaultLabel: '🔧 Run MeshFixer' },
     { id: 'clean-parts-btn', busyLabel: 'Cleaning...', defaultLabel: '🧹 Clean Parts' },
     { id: 'preview-parts-btn', busyLabel: '...', defaultLabel: '👁' },
+    { id: 'simplify-mesh-btn', busyLabel: 'Simplifying...', defaultLabel: '⚡ Simplify Mesh' },
   ];
 
   if (active) {
@@ -1224,6 +1430,9 @@ export function setProcessingState(
       if (!btn) continue;
       if (btn.dataset.prevDisabled === undefined) {
         btn.dataset.prevDisabled = btn.disabled ? '1' : '0';
+      }
+      if (btn.dataset.prevLabel === undefined) {
+        btn.dataset.prevLabel = btn.textContent;
       }
       btn.disabled = true;
       if (activeBtnId === item.id) {
@@ -1254,7 +1463,10 @@ export function setProcessingState(
         btn.disabled = btn.dataset.prevDisabled === '1';
         delete btn.dataset.prevDisabled;
       }
-      if (!btn.textContent.includes(item.defaultLabel.slice(2).trim())) {
+      if (btn.dataset.prevLabel !== undefined) {
+        btn.textContent = btn.dataset.prevLabel;
+        delete btn.dataset.prevLabel;
+      } else if (!btn.textContent.includes(item.defaultLabel.slice(2).trim())) {
         btn.textContent = item.defaultLabel;
       }
     }

@@ -30,6 +30,24 @@
       </div>
     </div>
   </div>
+  <div id="simplify-modal" class="simplify-modal" role="dialog" aria-modal="true" aria-labelledby="simplify-modal-title" hidden>
+    <div class="simplify-modal-card">
+      <div class="simplify-modal-header">
+        <span class="simplify-modal-icon">⚡</span>
+        <div>
+          <h2 id="simplify-modal-title" class="simplify-modal-title">Unoptimized Mesh Detected</h2>
+          <p id="simplify-modal-subtitle" class="simplify-modal-subtitle"></p>
+        </div>
+      </div>
+      <div id="simplify-modal-stats" class="simplify-modal-stats"></div>
+      <div id="simplify-preset-list" class="simplify-preset-list" role="radiogroup" aria-label="Simplification quality preset"></div>
+      <div id="simplify-modal-note" class="simplify-modal-note"></div>
+      <div class="simplify-modal-actions">
+        <button id="simplify-keep-btn" type="button" class="btn-secondary">Keep Original</button>
+        <button id="simplify-confirm-btn" type="button" class="btn-primary">✨ Simplify &amp; Load</button>
+      </div>
+    </div>
+  </div>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

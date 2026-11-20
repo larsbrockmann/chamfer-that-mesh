@@ -1,0 +1,24 @@
+[
+  {
+    "file": "bottle_head_modular_4x3.stl.gz",
+    "label": "Bottle Head Modular 4×3 (2.07M tris)",
+    "rawBytes": 103328884,
+    "expectedRawTriangles": 2066576,
+    "simplifyToleranceMm": 0.01,
+    "minReductionPct": 85,
+    "minCoplanarPct": 60,
+    "budgetsMs": {
+      "parse": 1500,
+      "rawTopology": 6000,
+      "indexedBuild": 3000,
+      "simplify": 15000,
+      "analyze": 1500,
+      "autoAngle": 1000,
+      "detectEdges": 2500,
+      "crease": 1000,
+      "bvhBuild": 1500,
+      "raycast100": 500,
+      "total": 25000
+    }
+  }
+]

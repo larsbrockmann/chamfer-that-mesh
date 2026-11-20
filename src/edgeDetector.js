@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { getFastMeshTopology } from './meshTopology.js';
 
 /**
  * Container for detected-edge data and selection state.
@@ -25,15 +26,27 @@ export class EdgeData {
     this.lineMat = null;
     /** @type {Map<string, number[]>} edge key -> face indices */
     this.adjacency = new Map();
-    /** @type {THREE.Vector3[]} welded vertex positions */
+    /** @type {THREE.Vector3[]} welded vertex positions (populated on small meshes) */
     this.vertices = [];
-    /** @type {number[][]} face vertex index triples */
+    /** @type {number[][]} face vertex index triples (populated on small meshes) */
     this.faces = [];
-    /** @type {THREE.Vector3[]} face normals */
+    /** @type {THREE.Vector3[]} face normals (populated on small meshes) */
     this.faceNormals = [];
+    /** @type {object|null} cached TypedArray topology */
+    this.topology = null;
+    /** @type {Float32Array|null} welded vertex coordinates (3 per vertex) */
+    this.vertCoords = null;
+    /** @type {Uint32Array|null} welded triangle indices (3 per face) */
+    this.triIndices = null;
+    /** @type {Float32Array|null} face normals (3 per face) */
+    this.faceNormalCoords = null;
+    /** @type {Float32Array|null} sharp edge endpoints [v1x,v1y,v1z,v2x,v2y,v2z,...] */
+    this.edgeEndpointCoords = null;
+    /** @type {Float32Array|null} reusable LineSegmentsGeometry color buffer */
+    this._colorBuffer = null;
     /** @type {number[][]} array of edge index chains/loops */
     this.chains = [];
-    /** @type {Array<{ id: number, faceIndices: number[], edgeIndices: number[], normal: THREE.Vector3 }>} */
+    /** @type {Array<{ id: number, faceIndices: number[] | Int32Array, edgeIndices: number[], normal: THREE.Vector3 }>} */
     this.surfaces = [];
     /** @type {Int32Array} maps triangle index to surface id */
     this.faceToSurface = new Int32Array(0);
@@ -45,6 +58,28 @@ export class EdgeData {
     this.hoveredSurfaceIdx = -1;
     /** @type {Set<number>} sharp edge indices highlighted by hovered surface */
     this.hoveredSurfaceEdgeSet = new Set();
+  }
+
+  getVertex(vi, out = new THREE.Vector3()) {
+    if (this.vertCoords && vi * 3 + 2 < this.vertCoords.length) {
+      const o = vi * 3;
+      return out.set(this.vertCoords[o], this.vertCoords[o + 1], this.vertCoords[o + 2]);
+    }
+    const v = this.vertices[vi];
+    return v ? out.copy(v) : out.set(0, 0, 0);
+  }
+
+  getFaceNormal(f, out = new THREE.Vector3()) {
+    if (this.faceNormalCoords && f * 3 + 2 < this.faceNormalCoords.length) {
+      const o = f * 3;
+      return out.set(
+        this.faceNormalCoords[o],
+        this.faceNormalCoords[o + 1],
+        this.faceNormalCoords[o + 2]
+      );
+    }
+    const n = this.faceNormals[f];
+    return n ? out.copy(n) : out.set(0, 0, 0);
   }
 
   selectAll() {
@@ -130,15 +165,21 @@ export class EdgeData {
    * Set currently hovered edge.
    */
   setHovered(edgeIdx, loopMode = true) {
-    if (this.hoveredEdgeIdx === edgeIdx && this.hoveredSurfaceIdx === -1) return;
+    const nextChainIdx =
+      edgeIdx >= 0 && loopMode && this.sharpEdges[edgeIdx]
+        ? this.sharpEdges[edgeIdx].chainId
+        : -1;
+    if (
+      this.hoveredEdgeIdx === edgeIdx &&
+      this.hoveredChainIdx === nextChainIdx &&
+      this.hoveredSurfaceIdx === -1
+    ) {
+      return;
+    }
     this.hoveredSurfaceIdx = -1;
     this.hoveredSurfaceEdgeSet.clear();
     this.hoveredEdgeIdx = edgeIdx;
-    if (edgeIdx >= 0 && loopMode && this.sharpEdges[edgeIdx]) {
-      this.hoveredChainIdx = this.sharpEdges[edgeIdx].chainId;
-    } else {
-      this.hoveredChainIdx = -1;
-    }
+    this.hoveredChainIdx = nextChainIdx;
     this.updateColors();
   }
 
@@ -217,7 +258,11 @@ export class EdgeData {
    */
   updateColors() {
     if (!this.lineGeo || this.sharpEdges.length === 0) return;
-    const colors = new Float32Array(this.sharpEdges.length * 6);
+    const needed = this.sharpEdges.length * 6;
+    if (!this._colorBuffer || this._colorBuffer.length !== needed) {
+      this._colorBuffer = new Float32Array(needed);
+    }
+    const colors = this._colorBuffer;
 
     for (let i = 0; i < this.sharpEdges.length; i++) {
       const e = this.sharpEdges[i];
@@ -259,7 +304,12 @@ export class EdgeData {
       colors[off + 5] = b;
     }
 
-    this.lineGeo.setColors(colors);
+    const colorAttr = this.lineGeo.getAttribute('instanceColorStart');
+    if (colorAttr && colorAttr.data?.array === colors) {
+      colorAttr.data.needsUpdate = true;
+    } else {
+      this.lineGeo.setColors(colors);
+    }
   }
 
   /**
@@ -277,6 +327,12 @@ export class EdgeData {
       this.lineMat?.dispose();
       this.lineSegments = null;
     }
+    this.topology = null;
+    this.vertCoords = null;
+    this.triIndices = null;
+    this.faceNormalCoords = null;
+    this.edgeEndpointCoords = null;
+    this._colorBuffer = null;
   }
 }
 
@@ -296,17 +352,31 @@ function getEdgeDirFrom(edge, fromVi) {
   ).normalize();
 }
 
-function faceNormalContinuity(eA, eB, faceNormals) {
-  if (!faceNormals) return 2;
-  const nA1 = faceNormals[eA.faceIdx1];
-  const nA2 = faceNormals[eA.faceIdx2];
-  const nB1 = faceNormals[eB.faceIdx1];
-  const nB2 = faceNormals[eB.faceIdx2];
-  if (!nA1 || !nA2 || !nB1 || !nB2) return 2;
-  return Math.max(
-    nA1.dot(nB1) + nA2.dot(nB2),
-    nA1.dot(nB2) + nA2.dot(nB1)
-  );
+function dotNormal(faceNormalsOrCoords, f1, f2) {
+  if (faceNormalsOrCoords instanceof Float32Array) {
+    const o1 = f1 * 3;
+    const o2 = f2 * 3;
+    if (o1 + 2 >= faceNormalsOrCoords.length || o2 + 2 >= faceNormalsOrCoords.length) return null;
+    return (
+      faceNormalsOrCoords[o1] * faceNormalsOrCoords[o2] +
+      faceNormalsOrCoords[o1 + 1] * faceNormalsOrCoords[o2 + 1] +
+      faceNormalsOrCoords[o1 + 2] * faceNormalsOrCoords[o2 + 2]
+    );
+  }
+  const n1 = faceNormalsOrCoords[f1];
+  const n2 = faceNormalsOrCoords[f2];
+  if (!n1 || !n2) return null;
+  return n1.dot(n2);
+}
+
+function faceNormalContinuity(eA, eB, faceNormalsOrCoords) {
+  if (!faceNormalsOrCoords) return 2;
+  const d11 = dotNormal(faceNormalsOrCoords, eA.faceIdx1, eB.faceIdx1);
+  const d22 = dotNormal(faceNormalsOrCoords, eA.faceIdx2, eB.faceIdx2);
+  const d12 = dotNormal(faceNormalsOrCoords, eA.faceIdx1, eB.faceIdx2);
+  const d21 = dotNormal(faceNormalsOrCoords, eA.faceIdx2, eB.faceIdx1);
+  if (d11 === null || d22 === null || d12 === null || d21 === null) return 2;
+  return Math.max(d11 + d22, d12 + d21);
 }
 
 /**
@@ -427,17 +497,14 @@ function buildEdgeChains(sharpEdges, faceNormals) {
 /**
  * Check whether both adjacent faces of two sharp edges are coplanar within 0.999 dot.
  */
-function areFacesCoplanar(eA, eB, faceNormals) {
-  if (!faceNormals) return true;
-  const nA1 = faceNormals[eA.faceIdx1];
-  const nA2 = faceNormals[eA.faceIdx2];
-  const nB1 = faceNormals[eB.faceIdx1];
-  const nB2 = faceNormals[eB.faceIdx2];
-  if (!nA1 || !nA2 || !nB1 || !nB2) return true;
-  return (
-    (nA1.dot(nB1) >= 0.999 && nA2.dot(nB2) >= 0.999) ||
-    (nA1.dot(nB2) >= 0.999 && nA2.dot(nB1) >= 0.999)
-  );
+function areFacesCoplanar(eA, eB, faceNormalsOrCoords) {
+  if (!faceNormalsOrCoords) return true;
+  const d11 = dotNormal(faceNormalsOrCoords, eA.faceIdx1, eB.faceIdx1);
+  const d22 = dotNormal(faceNormalsOrCoords, eA.faceIdx2, eB.faceIdx2);
+  const d12 = dotNormal(faceNormalsOrCoords, eA.faceIdx1, eB.faceIdx2);
+  const d21 = dotNormal(faceNormalsOrCoords, eA.faceIdx2, eB.faceIdx1);
+  if (d11 === null || d22 === null || d12 === null || d21 === null) return true;
+  return (d11 >= 0.999 && d22 >= 0.999) || (d12 >= 0.999 && d21 >= 0.999);
 }
 
 /**
@@ -639,50 +706,87 @@ function filterAndProcessChains(chains, sharpEdges, faceNormals, options = {}) {
  * Cluster mesh triangles into logical smooth/planar surfaces separated by sharp dihedral creases,
  * and map each surface to the sharp edges bordering it.
  */
-function buildSurfaces(faces, faceNormals, edgeAdjacency, sharpEdges, thresholdRad) {
-  const nFaces = faces.length;
+function buildSurfaces(topo, sharpEdges, thresholdRad) {
+  const nFaces = topo.triCount;
   const faceToSurface = new Int32Array(nFaces).fill(-1);
   if (nFaces === 0) return { surfaces: [], faceToSurface };
 
-  const faceNeighbors = Array.from({ length: nFaces }, () => []);
-  for (const [, flist] of edgeAdjacency) {
-    if (flist.length === 2) {
-      faceNeighbors[flist[0]].push(flist[1]);
-      faceNeighbors[flist[1]].push(flist[0]);
-    }
+  const { eF1, eF2, eCount, edgeSlots, validFace, faceNormalCoords: fn } = topo;
+
+  // Flat CSR face-neighbor graph (zero per-face array allocations)
+  const deg = new Int32Array(nFaces);
+  for (let i = 0; i < edgeSlots.length; i++) {
+    const slot = edgeSlots[i];
+    if (eCount[slot] !== 2) continue;
+    const f1 = eF1[slot];
+    const f2 = eF2[slot];
+    if (!validFace[f1] || !validFace[f2]) continue;
+    deg[f1]++;
+    deg[f2]++;
+  }
+
+  const faceOffsets = new Int32Array(nFaces + 1);
+  for (let f = 0; f < nFaces; f++) {
+    faceOffsets[f + 1] = faceOffsets[f] + deg[f];
+  }
+  const faceNeighbors = new Int32Array(faceOffsets[nFaces]);
+  const writeCursor = faceOffsets.slice(0, nFaces);
+
+  for (let i = 0; i < edgeSlots.length; i++) {
+    const slot = edgeSlots[i];
+    if (eCount[slot] !== 2) continue;
+    const f1 = eF1[slot];
+    const f2 = eF2[slot];
+    if (!validFace[f1] || !validFace[f2]) continue;
+    faceNeighbors[writeCursor[f1]++] = f2;
+    faceNeighbors[writeCursor[f2]++] = f1;
   }
 
   const smoothCos = Math.cos(Math.max(thresholdRad, 1e-4));
   const surfaces = [];
+  const queue = new Int32Array(nFaces);
 
   for (let f = 0; f < nFaces; f++) {
-    if (faceToSurface[f] >= 0) continue;
-    const [a, b, c] = faces[f];
-    if (a === b || b === c || c === a || !faceNormals[f] || faceNormals[f].lengthSq() < 0.5) continue;
+    if (faceToSurface[f] >= 0 || !validFace[f]) continue;
     const sId = surfaces.length;
-    const queue = [f];
     faceToSurface[f] = sId;
+    let qHead = 0;
+    let qTail = 0;
+    queue[qTail++] = f;
     const faceIndices = [f];
-    const avgNormal = new THREE.Vector3();
-    if (faceNormals[f]) avgNormal.add(faceNormals[f]);
 
-    let head = 0;
-    while (head < queue.length) {
-      const cur = queue[head++];
-      const curN = faceNormals[cur];
-      if (!curN) continue;
-      for (const nb of faceNeighbors[cur]) {
+    let avgX = fn[f * 3];
+    let avgY = fn[f * 3 + 1];
+    let avgZ = fn[f * 3 + 2];
+
+    while (qHead < qTail) {
+      const cur = queue[qHead++];
+      const curOff = cur * 3;
+      const cnx = fn[curOff];
+      const cny = fn[curOff + 1];
+      const cnz = fn[curOff + 2];
+
+      const start = faceOffsets[cur];
+      const end = faceOffsets[cur + 1];
+      for (let k = start; k < end; k++) {
+        const nb = faceNeighbors[k];
         if (faceToSurface[nb] >= 0) continue;
-        const nbN = faceNormals[nb];
-        if (nbN && curN.dot(nbN) >= smoothCos) {
+        const nbOff = nb * 3;
+        const nnx = fn[nbOff];
+        const nny = fn[nbOff + 1];
+        const nnz = fn[nbOff + 2];
+        if (cnx * nnx + cny * nny + cnz * nnz >= smoothCos) {
           faceToSurface[nb] = sId;
           faceIndices.push(nb);
-          avgNormal.add(nbN);
-          queue.push(nb);
+          avgX += nnx;
+          avgY += nny;
+          avgZ += nnz;
+          queue[qTail++] = nb;
         }
       }
     }
 
+    const avgNormal = new THREE.Vector3(avgX, avgY, avgZ);
     if (avgNormal.lengthSq() > 1e-12) {
       avgNormal.normalize();
     } else {
@@ -697,19 +801,28 @@ function buildSurfaces(faces, faceNormals, edgeAdjacency, sharpEdges, thresholdR
     });
   }
 
-  const surfaceEdgeSets = surfaces.map(() => new Set());
+  const surfaceEdgeSets = new Array(surfaces.length);
   for (let eIdx = 0; eIdx < sharpEdges.length; eIdx++) {
     const e = sharpEdges[eIdx];
     const adjFaces = e.faceIndices || [e.faceIdx1, e.faceIdx2];
     for (const fIdx of adjFaces) {
       if (fIdx === undefined || fIdx < 0 || fIdx >= nFaces) continue;
       const sId = faceToSurface[fIdx];
-      if (sId >= 0) surfaceEdgeSets[sId].add(eIdx);
+      if (sId >= 0) {
+        let s = surfaceEdgeSets[sId];
+        if (!s) {
+          s = new Set();
+          surfaceEdgeSets[sId] = s;
+        }
+        s.add(eIdx);
+      }
     }
   }
 
   for (let sId = 0; sId < surfaces.length; sId++) {
-    surfaces[sId].edgeIndices = Array.from(surfaceEdgeSets[sId]);
+    if (surfaceEdgeSets[sId]) {
+      surfaces[sId].edgeIndices = Array.from(surfaceEdgeSets[sId]);
+    }
   }
 
   return { surfaces, faceToSurface };
@@ -739,184 +852,129 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
   const collinearAngleDeg = opts.collinearAngleDeg || 12;
   const convexOnly = !!opts.convexOnly;
 
-  const posArray = posAttr.array;
-  const indexed = !!geometry.index;
-  const indices = indexed ? geometry.index.array : null;
-  const triCount = indexed
-    ? geometry.index.count / 3
-    : posAttr.count / 3;
+  const topo = getFastMeshTopology(geometry);
+  if (!topo || topo.triCount === 0) return edgeData;
 
-  // ---- 1. Read all vertex positions ----
-  const rawVerts = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    rawVerts.push(
-      new THREE.Vector3(
-        posArray[i * 3],
-        posArray[i * 3 + 1],
-        posArray[i * 3 + 2]
-      )
-    );
-  }
+  const {
+    vertCount,
+    triCount,
+    vertCoords,
+    triIndices,
+    faceNormalCoords,
+    validFace,
+    eV1,
+    eV2,
+    eF1,
+    eF2,
+    eCount,
+    edgeSlots,
+  } = topo;
 
-  // ---- 2. Weld vertices via spatial hashing ----
-  const EPSILON = 1e-6;
-  const CELL = EPSILON * 100;
-  const weldMap = new Map();
-  const weldedPositions = [];
-  const vertexRemap = new Int32Array(rawVerts.length);
+  edgeData.topology = topo;
+  edgeData.vertCoords = vertCoords;
+  edgeData.triIndices = triIndices;
+  edgeData.faceNormalCoords = faceNormalCoords;
 
-  function hashKey(v) {
-    const gx = Math.round(v.x / CELL);
-    const gy = Math.round(v.y / CELL);
-    const gz = Math.round(v.z / CELL);
-    return `${gx},${gy},${gz}`;
-  }
-
-  for (let i = 0; i < rawVerts.length; i++) {
-    const v = rawVerts[i];
-    const key = hashKey(v);
-
-    let found = -1;
-    const bucket = weldMap.get(key);
-    if (bucket) {
-      for (const entry of bucket) {
-        if (entry.pos.distanceToSquared(v) < EPSILON * EPSILON) {
-          found = entry.weldIdx;
-          break;
-        }
-      }
+  // Populate legacy object arrays on small meshes; large meshes read TypedArrays directly
+  if (triCount <= 25000) {
+    const vertsArr = new Array(vertCount);
+    for (let i = 0; i < vertCount; i++) {
+      const o = i * 3;
+      vertsArr[i] = new THREE.Vector3(vertCoords[o], vertCoords[o + 1], vertCoords[o + 2]);
     }
-
-    if (found >= 0) {
-      vertexRemap[i] = found;
-    } else {
-      const idx = weldedPositions.length;
-      weldedPositions.push(v.clone());
-      vertexRemap[i] = idx;
-      if (!weldMap.has(key)) weldMap.set(key, []);
-      weldMap.get(key).push({ pos: v, weldIdx: idx });
+    const facesArr = new Array(triCount);
+    const fnArr = new Array(triCount);
+    for (let f = 0; f < triCount; f++) {
+      const o = f * 3;
+      facesArr[f] = [triIndices[o], triIndices[o + 1], triIndices[o + 2]];
+      fnArr[f] = new THREE.Vector3(
+        faceNormalCoords[o],
+        faceNormalCoords[o + 1],
+        faceNormalCoords[o + 2]
+      );
     }
+    edgeData.vertices = vertsArr;
+    edgeData.faces = facesArr;
+    edgeData.faceNormals = fnArr;
   }
 
-  edgeData.vertices = weldedPositions;
-
-  // ---- 3. Build faces & compute face normals ----
-  const faces = [];
-  const faceNormals = [];
-  const tmpA = new THREE.Vector3();
-  const tmpB = new THREE.Vector3();
-
-  for (let f = 0; f < triCount; f++) {
-    let i0, i1, i2;
-    if (indexed) {
-      i0 = indices[f * 3];
-      i1 = indices[f * 3 + 1];
-      i2 = indices[f * 3 + 2];
-    } else {
-      i0 = f * 3;
-      i1 = f * 3 + 1;
-      i2 = f * 3 + 2;
-    }
-
-    const w0 = vertexRemap[i0];
-    const w1 = vertexRemap[i1];
-    const w2 = vertexRemap[i2];
-    faces.push([w0, w1, w2]);
-
-    const p0 = weldedPositions[w0];
-    const p1 = weldedPositions[w1];
-    const p2 = weldedPositions[w2];
-    tmpA.subVectors(p1, p0);
-    tmpB.subVectors(p2, p0);
-    const normal = new THREE.Vector3().crossVectors(tmpA, tmpB).normalize();
-    faceNormals.push(normal);
-  }
-
-  edgeData.faces = faces;
-  edgeData.faceNormals = faceNormals;
-
-  // ---- 4. Build edge adjacency ----
-  const edgeAdjacency = new Map();
-
-  function edgeKey(a, b) {
-    return a < b ? `${a}_${b}` : `${b}_${a}`;
-  }
-
-  for (let f = 0; f < faces.length; f++) {
-    const [a, b, c] = faces[f];
-    if (a === b || b === c || c === a || faceNormals[f].lengthSq() < 0.5) continue;
-    for (const [va, vb] of [
-      [a, b],
-      [b, c],
-      [c, a],
-    ]) {
-      const key = edgeKey(va, vb);
-      if (!edgeAdjacency.has(key)) edgeAdjacency.set(key, []);
-      edgeAdjacency.get(key).push(f);
-    }
-  }
-
-  edgeData.adjacency = edgeAdjacency;
-
-  // ---- 5. Find sharp edges by dihedral angle ----
+  // ---- Find sharp edges by dihedral angle directly over TypedArray edge slots ----
   const thresholdRad = Math.max(1e-4, (angleThresholdDeg * Math.PI) / 180 - 1e-5);
   const sharpEdges = [];
 
-  for (const [key, faceList] of edgeAdjacency) {
-    if (faceList.length !== 2) continue;
-    const [f1, f2] = faceList;
-    const n1 = faceNormals[f1];
-    const n2 = faceNormals[f2];
+  for (let sIdx = 0; sIdx < edgeSlots.length; sIdx++) {
+    const slot = edgeSlots[sIdx];
+    if (eCount[slot] !== 2) continue;
+    const f1 = eF1[slot];
+    const f2 = eF2[slot];
+    if (!validFace[f1] || !validFace[f2]) continue;
+    const f1o = f1 * 3;
+    const f2o = f2 * 3;
 
-    const dot = THREE.MathUtils.clamp(n1.dot(n2), -1, 1);
+    let dot =
+      faceNormalCoords[f1o] * faceNormalCoords[f2o] +
+      faceNormalCoords[f1o + 1] * faceNormalCoords[f2o + 1] +
+      faceNormalCoords[f1o + 2] * faceNormalCoords[f2o + 2];
+    if (dot > 1) dot = 1;
+    else if (dot < -1) dot = -1;
+
     const dihedralAngle = Math.acos(dot);
+    if (dihedralAngle <= thresholdRad) continue;
 
-    if (dihedralAngle > thresholdRad) {
-      const parts = key.split('_');
-      const vi1 = parseInt(parts[0]);
-      const vi2 = parseInt(parts[1]);
+    const vi1 = eV1[slot];
+    const vi2 = eV2[slot];
 
-      const face1 = faces[f1];
-      const opp1Idx = face1.find((idx) => idx !== vi1 && idx !== vi2);
-      const face2 = faces[f2];
-      const opp2Idx = face2.find((idx) => idx !== vi1 && idx !== vi2);
+    const t1a = triIndices[f1o];
+    const t1b = triIndices[f1o + 1];
+    const t1c = triIndices[f1o + 2];
+    const opp1Idx = t1a !== vi1 && t1a !== vi2 ? t1a : t1b !== vi1 && t1b !== vi2 ? t1b : t1c !== vi1 && t1c !== vi2 ? t1c : undefined;
 
-      let isConvex = true;
-      if (opp1Idx !== undefined) {
-        const vDiff = new THREE.Vector3().subVectors(
-          weldedPositions[opp1Idx],
-          weldedPositions[vi1]
-        );
-        isConvex = n2.dot(vDiff) <= 0;
-      }
+    const t2a = triIndices[f2o];
+    const t2b = triIndices[f2o + 1];
+    const t2c = triIndices[f2o + 2];
+    const opp2Idx = t2a !== vi1 && t2a !== vi2 ? t2a : t2b !== vi1 && t2b !== vi2 ? t2b : t2c !== vi1 && t2c !== vi2 ? t2c : undefined;
 
-      if (convexOnly && !isConvex) continue;
-
-      sharpEdges.push({
-        v1: weldedPositions[vi1].clone(),
-        v2: weldedPositions[vi2].clone(),
-        vi1,
-        vi2,
-        opp1Idx,
-        opp2Idx,
-        isConvex,
-        dihedralAngle,
-        faceIdx1: f1,
-        faceIdx2: f2,
-        faceIndices: [f1, f2],
-        selected: true, // Selected by default
-      });
+    const v1o = vi1 * 3;
+    const v2o = vi2 * 3;
+    let isConvex = true;
+    if (opp1Idx !== undefined) {
+      const oo = opp1Idx * 3;
+      const dx = vertCoords[oo] - vertCoords[v1o];
+      const dy = vertCoords[oo + 1] - vertCoords[v1o + 1];
+      const dz = vertCoords[oo + 2] - vertCoords[v1o + 2];
+      isConvex =
+        faceNormalCoords[f2o] * dx +
+          faceNormalCoords[f2o + 1] * dy +
+          faceNormalCoords[f2o + 2] * dz <=
+        0;
     }
+
+    if (convexOnly && !isConvex) continue;
+
+    sharpEdges.push({
+      v1: new THREE.Vector3(vertCoords[v1o], vertCoords[v1o + 1], vertCoords[v1o + 2]),
+      v2: new THREE.Vector3(vertCoords[v2o], vertCoords[v2o + 1], vertCoords[v2o + 2]),
+      vi1,
+      vi2,
+      opp1Idx,
+      opp2Idx,
+      isConvex,
+      dihedralAngle,
+      faceIdx1: f1,
+      faceIdx2: f2,
+      faceIndices: [f1, f2],
+      selected: true, // Selected by default
+    });
   }
 
-  const rawChains = buildEdgeChains(sharpEdges, faceNormals);
+  const rawChains = buildEdgeChains(sharpEdges, faceNormalCoords);
   const rawCount = sharpEdges.length;
 
-  // ---- 6. Filter & combine tiny/collinear edges ----
+  // ---- Filter & combine tiny/collinear edges ----
   const { edges: filteredEdges, chains: filteredChains } = filterAndProcessChains(
     rawChains,
     sharpEdges,
-    faceNormals,
+    faceNormalCoords,
     { filterTiny, minEdgeLength, filterMode, collinearAngleDeg }
   );
 
@@ -925,26 +983,27 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
   edgeData.sharpEdges = filteredEdges;
   edgeData.chains = filteredChains;
 
-  const { surfaces, faceToSurface } = buildSurfaces(
-    faces,
-    faceNormals,
-    edgeAdjacency,
-    filteredEdges,
-    thresholdRad
-  );
+  const { surfaces, faceToSurface } = buildSurfaces(topo, filteredEdges, thresholdRad);
   edgeData.surfaces = surfaces;
   edgeData.faceToSurface = faceToSurface;
 
-  // ---- 7. Build High-Visibility LineSegments2 Object ----
+  // ---- Build Float32Array endpoint buffer & High-Visibility LineSegments2 ----
   if (filteredEdges.length > 0) {
-    const linePositions = [];
+    const endpointCoords = new Float32Array(filteredEdges.length * 6);
     for (let i = 0; i < filteredEdges.length; i++) {
       const e = filteredEdges[i];
-      linePositions.push(e.v1.x, e.v1.y, e.v1.z, e.v2.x, e.v2.y, e.v2.z);
+      const off = i * 6;
+      endpointCoords[off] = e.v1.x;
+      endpointCoords[off + 1] = e.v1.y;
+      endpointCoords[off + 2] = e.v1.z;
+      endpointCoords[off + 3] = e.v2.x;
+      endpointCoords[off + 4] = e.v2.y;
+      endpointCoords[off + 5] = e.v2.z;
     }
+    edgeData.edgeEndpointCoords = endpointCoords;
 
     const lineGeo = new LineSegmentsGeometry();
-    lineGeo.setPositions(linePositions);
+    lineGeo.setPositions(endpointCoords);
 
     const res = new THREE.Vector2(
       viewportResolution.width || 1000,
@@ -972,7 +1031,7 @@ export function detectEdges(geometry, angleThresholdDeg = 30, options = {}) {
     edgeData.lineMat = lineMat;
     edgeData.lineSegments = lines;
 
-    // Apply initial colors (all selected = neon cyan)
+    // Apply initial colors (all selected = electric cyan)
     edgeData.updateColors();
   }
 
@@ -994,9 +1053,57 @@ export function autoDetectAngleThreshold(geometryOrEdgeData, options = {}) {
 
   const convexOnly = !!options.convexOnly;
   const angles = [];
+  const radToDeg = 180 / Math.PI;
 
-  // Fast path: if EdgeData with adjacency and faceNormals is supplied
-  if (geometryOrEdgeData.adjacency instanceof Map && Array.isArray(geometryOrEdgeData.faceNormals)) {
+  const topo = geometryOrEdgeData.topology
+    ? geometryOrEdgeData.topology
+    : geometryOrEdgeData.getAttribute
+      ? getFastMeshTopology(geometryOrEdgeData)
+      : null;
+
+  if (topo) {
+    const { vertCoords, triIndices, faceNormalCoords, validFace, eV1, eV2, eF1, eF2, eCount, edgeSlots } = topo;
+    const minCos = Math.cos(Math.PI / 180); // ignore < 1 deg flat facets
+
+    for (let i = 0; i < edgeSlots.length; i++) {
+      const slot = edgeSlots[i];
+      if (eCount[slot] !== 2) continue;
+      const f1 = eF1[slot];
+      const f2 = eF2[slot];
+      if (!validFace[f1] || !validFace[f2]) continue;
+      const f1o = f1 * 3;
+      const f2o = f2 * 3;
+
+      let dot =
+        faceNormalCoords[f1o] * faceNormalCoords[f2o] +
+        faceNormalCoords[f1o + 1] * faceNormalCoords[f2o + 1] +
+        faceNormalCoords[f1o + 2] * faceNormalCoords[f2o + 2];
+      if (dot > minCos) continue;
+      if (dot < -1) dot = -1;
+
+      const deg = Math.acos(dot) * radToDeg;
+
+      if (convexOnly) {
+        const vi1 = eV1[slot];
+        const vi2 = eV2[slot];
+        const a = triIndices[f1o];
+        const b = triIndices[f1o + 1];
+        const c = triIndices[f1o + 2];
+        const opp1 = a !== vi1 && a !== vi2 ? a : b !== vi1 && b !== vi2 ? b : c !== vi1 && c !== vi2 ? c : -1;
+        if (opp1 >= 0) {
+          const oo = opp1 * 3;
+          const v1o = vi1 * 3;
+          const d =
+            faceNormalCoords[f2o] * (vertCoords[oo] - vertCoords[v1o]) +
+            faceNormalCoords[f2o + 1] * (vertCoords[oo + 1] - vertCoords[v1o + 1]) +
+            faceNormalCoords[f2o + 2] * (vertCoords[oo + 2] - vertCoords[v1o + 2]);
+          if (d > 0) continue;
+        }
+      }
+
+      angles.push(deg);
+    }
+  } else if (geometryOrEdgeData.adjacency instanceof Map && Array.isArray(geometryOrEdgeData.faceNormals)) {
     const { adjacency, faceNormals, faces, vertices } = geometryOrEdgeData;
     for (const [key, faceList] of adjacency) {
       if (faceList.length !== 2) continue;
@@ -1006,7 +1113,7 @@ export function autoDetectAngleThreshold(geometryOrEdgeData, options = {}) {
       if (!n1 || !n2) continue;
 
       const dot = THREE.MathUtils.clamp(n1.dot(n2), -1, 1);
-      const deg = Math.acos(dot) * (180 / Math.PI);
+      const deg = Math.acos(dot) * radToDeg;
       if (deg < 1.0) continue;
 
       if (convexOnly && faces && vertices) {
@@ -1022,136 +1129,28 @@ export function autoDetectAngleThreshold(geometryOrEdgeData, options = {}) {
 
       angles.push(deg);
     }
-  } else {
-    // Standard path: compute from BufferGeometry
-    const posAttr = geometryOrEdgeData.getAttribute ? geometryOrEdgeData.getAttribute('position') : null;
-    if (!posAttr) return 30;
-
-    const posArray = posAttr.array;
-    const indexed = !!geometryOrEdgeData.index;
-    const indices = indexed ? geometryOrEdgeData.index.array : null;
-    const triCount = indexed ? geometryOrEdgeData.index.count / 3 : posAttr.count / 3;
-
-    const EPSILON = 1e-5;
-    const CELL = EPSILON * 100;
-    const weldMap = new Map();
-    const weldedPositions = [];
-    const vertexRemap = new Int32Array(posAttr.count);
-
-    function hashKey(x, y, z) {
-      const gx = Math.round(x / CELL);
-      const gy = Math.round(y / CELL);
-      const gz = Math.round(z / CELL);
-      return `${gx},${gy},${gz}`;
-    }
-
-    for (let i = 0; i < posAttr.count; i++) {
-      const x = posArray[i * 3];
-      const y = posArray[i * 3 + 1];
-      const z = posArray[i * 3 + 2];
-      const key = hashKey(x, y, z);
-
-      let found = -1;
-      const bucket = weldMap.get(key);
-      if (bucket) {
-        for (let b = 0; b < bucket.length; b++) {
-          const item = bucket[b];
-          const dx = item.x - x;
-          const dy = item.y - y;
-          const dz = item.z - z;
-          if (dx * dx + dy * dy + dz * dz < EPSILON * EPSILON) {
-            found = item.idx;
-            break;
-          }
-        }
-      }
-
-      if (found >= 0) {
-        vertexRemap[i] = found;
-      } else {
-        const idx = weldedPositions.length;
-        weldedPositions.push(new THREE.Vector3(x, y, z));
-        vertexRemap[i] = idx;
-        if (!weldMap.has(key)) weldMap.set(key, []);
-        weldMap.get(key).push({ x, y, z, idx });
-      }
-    }
-
-    const faceNormals = [];
-    const faces = [];
-    const tmpA = new THREE.Vector3();
-    const tmpB = new THREE.Vector3();
-
-    for (let f = 0; f < triCount; f++) {
-      const i0 = indexed ? indices[f * 3] : f * 3;
-      const i1 = indexed ? indices[f * 3 + 1] : f * 3 + 1;
-      const i2 = indexed ? indices[f * 3 + 2] : f * 3 + 2;
-
-      const w0 = vertexRemap[i0];
-      const w1 = vertexRemap[i1];
-      const w2 = vertexRemap[i2];
-      faces.push([w0, w1, w2]);
-
-      const p0 = weldedPositions[w0];
-      const p1 = weldedPositions[w1];
-      const p2 = weldedPositions[w2];
-
-      tmpA.subVectors(p1, p0);
-      tmpB.subVectors(p2, p0);
-      const n = new THREE.Vector3().crossVectors(tmpA, tmpB).normalize();
-      faceNormals.push(n);
-    }
-
-    const edgeAdjacency = new Map();
-    for (let f = 0; f < faces.length; f++) {
-      const [a, b, c] = faces[f];
-      if (a === b || b === c || c === a || faceNormals[f].lengthSq() < 0.5) continue;
-      for (const [va, vb] of [[a, b], [b, c], [c, a]]) {
-        const k = va < vb ? `${va}_${vb}` : `${vb}_${va}`;
-        if (!edgeAdjacency.has(k)) edgeAdjacency.set(k, []);
-        edgeAdjacency.get(k).push(f);
-      }
-    }
-
-    for (const [key, faceList] of edgeAdjacency) {
-      if (faceList.length !== 2) continue;
-      const [f1, f2] = faceList;
-      const n1 = faceNormals[f1];
-      const n2 = faceNormals[f2];
-      if (!n1 || !n2) continue;
-
-      const dot = THREE.MathUtils.clamp(n1.dot(n2), -1, 1);
-      const deg = Math.acos(dot) * (180 / Math.PI);
-      if (deg < 1.0) continue;
-
-      if (convexOnly) {
-        const parts = key.split('_');
-        const vi1 = parseInt(parts[0], 10);
-        const vi2 = parseInt(parts[1], 10);
-        const opp1Idx = faces[f1].find((idx) => idx !== vi1 && idx !== vi2);
-        if (opp1Idx !== undefined) {
-          const vDiff = new THREE.Vector3().subVectors(weldedPositions[opp1Idx], weldedPositions[vi1]);
-          if (n2.dot(vDiff) > 0) continue;
-        }
-      }
-
-      angles.push(deg);
-    }
   }
 
   if (angles.length === 0) return 30;
 
-  angles.sort((a, b) => a - b);
-  const minA = angles[0];
+  let minA = Infinity;
+  const roundedMask = new Uint8Array(181);
+  for (let i = 0; i < angles.length; i++) {
+    const a = angles[i];
+    if (a < minA) minA = a;
+    const r = Math.min(180, Math.max(0, Math.round(a)));
+    roundedMask[r] = 1;
+  }
 
-  // If all non-flat angles are sharp (min >= 35 deg, e.g. cube or stepped pyramid),
-  // set comfortably below the minimum sharp feature (defaulting towards 30 deg).
   if (minA >= 35) {
     return Math.max(15, Math.min(30, Math.round(minA * 0.6)));
   }
 
-  // Find the most distinct gap separating smooth facets from sharp feature edges
-  const uniqueAngles = Array.from(new Set(angles.map((a) => Math.round(a)))).sort((a, b) => a - b);
+  const uniqueAngles = [];
+  for (let deg = 0; deg <= 180; deg++) {
+    if (roundedMask[deg]) uniqueAngles.push(deg);
+  }
+
   let bestThreshold = 30;
   let maxGapScore = 0;
 

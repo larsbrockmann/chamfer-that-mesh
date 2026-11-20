@@ -2,6 +2,7 @@
    main.js — App entry: init scene, UI event wiring, animation loop
    ============================================================ */
 import * as THREE from 'three';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import {
   initScene,
   scene,
@@ -22,17 +23,30 @@ import {
   findLooseParts,
   verifyMeshFixWithBoolDiff,
 } from './meshFixer.js';
+import {
+  getFastMeshTopology,
+  invalidateMeshTopology,
+  buildCreaseGeometryFromTopology,
+  detectUnoptimizedMesh,
+} from './meshTopology.js';
+import { simplifyGeometryAsync } from './meshSimplifier.js';
 import { exportSTL, export3MF } from './meshExporter.js';
 import {
   buildUI,
   updateEdgeCount,
   updateMeshHealth,
+  updateOptimizationBanner,
+  showSimplifyModal,
   setUndoRedoState,
   setProcessingState,
   setLoosePartsPreviewActive,
   setPreviewToggleUI,
   setEdgeHighlightToggleUI,
 } from './ui.js';
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 // ---- App state ----
 let currentMesh = null;
@@ -46,30 +60,69 @@ let highlightedSurfaceId = -1;
 let previewGroup = null;
 let showLoosePartsPreview = false;
 let loosePartsPreviewGroup = null;
+let activeLoadToken = 0;
+
+// ---- Demand-driven rendering ----
+let needsRender = true;
+function requestRender() {
+  needsRender = true;
+}
+
+// ---- Geometry memory / BVH lifecycle helpers ----
+function getGeometryTriCount(geo) {
+  if (!geo) return 0;
+  if (geo.index) return Math.floor(geo.index.count / 3);
+  const pos = geo.getAttribute('position');
+  return pos ? Math.floor(pos.count / 3) : 0;
+}
+
+function disposeGeometrySafely(geo) {
+  if (!geo) return;
+  try { geo.disposeBoundsTree?.(); } catch (_) {}
+  invalidateMeshTopology(geo);
+  try { geo.dispose(); } catch (_) {}
+}
+
+function ensureGeometryBVH(geo) {
+  if (!geo || geo.boundsTree) return;
+  const tris = getGeometryTriCount(geo);
+  if (tris < 3) return;
+  try {
+    geo.computeBoundsTree();
+  } catch (err) {
+    console.warn('BVH build skipped:', err);
+  }
+}
 
 // ---- History state (Undo / Redo) ----
-const MAX_HISTORY = 20;
+function getMaxHistoryForGeometry(geo) {
+  const tris = getGeometryTriCount(geo);
+  if (tris > 250000) return 5;
+  if (tris > 50000) return 10;
+  return 20;
+}
 let undoStack = [];
 let redoStack = [];
 
 function pushUndoState() {
   if (!currentMesh) return;
+  const maxHist = getMaxHistoryForGeometry(currentMesh.geometry);
   undoStack.push({
     geo: currentMesh.geometry.clone(),
     isInitial: currentIsInitial,
   });
-  if (undoStack.length > MAX_HISTORY) {
+  while (undoStack.length > maxHist) {
     const oldest = undoStack.shift();
-    oldest.geo.dispose();
+    disposeGeometrySafely(oldest?.geo);
   }
-  for (const entry of redoStack) entry.geo.dispose();
+  for (const entry of redoStack) disposeGeometrySafely(entry?.geo);
   redoStack = [];
   syncUndoRedoUI();
 }
 
 function clearHistory() {
-  for (const entry of undoStack) entry.geo.dispose();
-  for (const entry of redoStack) entry.geo.dispose();
+  for (const entry of undoStack) disposeGeometrySafely(entry?.geo);
+  for (const entry of redoStack) disposeGeometrySafely(entry?.geo);
   undoStack = [];
   redoStack = [];
   syncUndoRedoUI();
@@ -107,17 +160,19 @@ function handleUndo() {
     isInitial: currentIsInitial,
   });
 
-  currentMesh.geometry.dispose();
+  disposeGeometrySafely(currentMesh.geometry);
   currentMesh.geometry = prevEntry.geo;
   currentMesh.geometry.computeVertexNormals();
   currentMesh.geometry.computeBoundingBox();
   currentMesh.geometry.computeBoundingSphere();
+  ensureGeometryBVH(currentMesh.geometry);
   currentIsInitial = prevEntry.isInitial;
 
   syncUndoRedoUI();
   rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
+  requestRender();
   showToast('↩ Undone modification (Ctrl+Z)', 'is-selected');
 }
 
@@ -131,17 +186,19 @@ function handleRedo() {
     isInitial: currentIsInitial,
   });
 
-  currentMesh.geometry.dispose();
+  disposeGeometrySafely(currentMesh.geometry);
   currentMesh.geometry = nextEntry.geo;
   currentMesh.geometry.computeVertexNormals();
   currentMesh.geometry.computeBoundingBox();
   currentMesh.geometry.computeBoundingSphere();
+  ensureGeometryBVH(currentMesh.geometry);
   currentIsInitial = nextEntry.isInitial;
 
   syncUndoRedoUI();
   rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
+  requestRender();
   showToast('↪ Redone modification (Ctrl+Y)', 'is-selected');
 }
 
@@ -150,16 +207,18 @@ function handleResetModel() {
   hideLoosePartsPreview();
 
   pushUndoState();
-  currentMesh.geometry.dispose();
+  disposeGeometrySafely(currentMesh.geometry);
   currentMesh.geometry = initialGeometry.clone();
   currentMesh.geometry.computeVertexNormals();
   currentMesh.geometry.computeBoundingBox();
   currentMesh.geometry.computeBoundingSphere();
+  ensureGeometryBVH(currentMesh.geometry);
   currentIsInitial = true;
 
   syncUndoRedoUI();
   rebuildMeshBaseLines();
   handleDetectEdges();
+  requestRender();
   showToast('↺ Restored original model (Ctrl+Z to undo)', 'is-selected');
 }
 
@@ -193,13 +252,14 @@ function triggerAutoDetect(delay = 60) {
 
 // ---- Initialise ----
 initScene();
+controls.addEventListener('change', requestRender);
 
 const canvas = document.getElementById('canvas');
 
 const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShortcutsPopover } = buildUI({
   onImport: () => {},
   onLoadSample: (url) => {
-    loadFromUrl(url, onModelLoaded, onModelLoadError);
+    loadFromUrl(url, onModelLoaded, onModelLoadError, handleModelLoadStart);
   },
   onAutoAngle: () => handleAutoAngle(false),
   onExportSTL: handleExportSTL,
@@ -257,6 +317,7 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
     } else {
       removePreview();
     }
+    requestRender();
   },
   onApplyChamfer: handleApplyChamfer,
   onStopProcessing: handleStopProcessing,
@@ -278,8 +339,12 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
   onRunMeshFixer: handleRunMeshFixer,
   onToggleLoosePartsPreview: handleToggleLoosePartsPreview,
   onCleanUnconnectedParts: handleCleanUnconnectedParts,
+  onSimplifyMesh: handleManualSimplifyMesh,
   onShadingModeChange: applyShadingMode,
-  onRotationCenterToggle: setRotationCenterVisible,
+  onRotationCenterToggle: (v) => {
+    setRotationCenterVisible(v);
+    requestRender();
+  },
   onRecenter: () => {
     if (!currentMesh) return;
     const box = new THREE.Box3().setFromObject(currentMesh);
@@ -293,6 +358,7 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
       center.clone().add(new THREE.Vector3(maxDim * 1.5, maxDim * 1.1, maxDim * 1.5))
     );
     controls.update();
+    requestRender();
   },
   onRotate: (axis) => {
     if (!currentMesh) return;
@@ -317,92 +383,200 @@ const { updateInfo, fileInput, setWidth, setAngle, setSelectionMode, toggleShort
     geo.computeBoundingBox();
     geo.computeBoundingSphere();
 
+    try { geo.disposeBoundsTree?.(); } catch (_) {}
+    invalidateMeshTopology(geo);
+    ensureGeometryBVH(geo);
+
     controls.target.set(0, 0, 0);
     setOrbitPivot(new THREE.Vector3(0, 0, 0), false);
 
     // Re-build subtle mesh base lines, re-detect sharp edges and update preview
     rebuildMeshBaseLines();
     handleDetectEdges();
+    requestRender();
   },
   onEdgeHighlightToggle: (v) => setOverlaysVisible(v, false),
 });
 
 // ---- Loaders ----
 const viewport = document.getElementById('viewport');
-setupLoaders(viewport, fileInput, onModelLoaded, onModelLoadError);
+setupLoaders(viewport, fileInput, onModelLoaded, onModelLoadError, handleModelLoadStart);
+
+function handleModelLoadStart(fileName) {
+  setProcessingState(
+    true,
+    'Importing 3D Model...',
+    fileName ? `Reading & indexing ${fileName}...` : 'Reading & indexing mesh...'
+  );
+}
 
 function onModelLoadError(err) {
+  setProcessingState(false);
   showToast(err?.message || 'Failed to load 3D model', 'is-unselected');
 }
 
-function onModelLoaded(mesh) {
-  if (initialGeometry) {
-    initialGeometry.dispose();
-    initialGeometry = null;
+async function onModelLoaded(mesh) {
+  const loadToken = ++activeLoadToken;
+  const fileName = mesh.userData?.fileName || '';
+  let simplifyToast = '';
+
+  try {
+    setProcessingState(true, 'Analyzing Mesh...', 'Inspecting topology & redundant facets...');
+    await waitForNextPaint();
+    if (loadToken !== activeLoadToken) {
+      disposeGeometrySafely(mesh.geometry);
+      mesh.material?.dispose();
+      return;
+    }
+
+    const topo = getFastMeshTopology(mesh.geometry);
+    let optInfo = detectUnoptimizedMesh(topo);
+
+    if (optInfo.isUnoptimized) {
+      setProcessingState(false);
+      const choice = await showSimplifyModal({ fileName, ...optInfo }, { mode: 'import' });
+      if (loadToken !== activeLoadToken) {
+        disposeGeometrySafely(mesh.geometry);
+        mesh.material?.dispose();
+        return;
+      }
+
+      if (choice.action === 'simplify') {
+        activeAbortController = new AbortController();
+        isProcessingMesh = true;
+        setProcessingState(
+          true,
+          'Simplifying Mesh...',
+          `Optimizing ${optInfo.triCount.toLocaleString()} triangles...`,
+          'simplify-mesh-btn'
+        );
+        await waitForNextPaint();
+
+        try {
+          const simRes = await simplifyGeometryAsync(mesh.geometry, {
+            tolerance: choice.tolerance,
+            signal: activeAbortController.signal,
+            onProgress: (msg) => {
+              const detailEl = document.getElementById('processing-detail');
+              if (detailEl) detailEl.textContent = msg;
+            },
+          });
+          if (loadToken !== activeLoadToken) {
+            disposeGeometrySafely(simRes.geometry);
+            disposeGeometrySafely(mesh.geometry);
+            mesh.material?.dispose();
+            return;
+          }
+          if (simRes.geometry && simRes.geometry !== mesh.geometry && simRes.trisAfter > 0) {
+            disposeGeometrySafely(mesh.geometry);
+            mesh.geometry = simRes.geometry;
+            optInfo = detectUnoptimizedMesh(getFastMeshTopology(mesh.geometry));
+            simplifyToast = `⚡ Simplified (${simRes.engine}): ${simRes.trisBefore.toLocaleString()} → ${simRes.trisAfter.toLocaleString()} tris (-${simRes.reductionPct}%)`;
+          }
+        } catch (err) {
+          if (err?.name === 'AbortError') {
+            simplifyToast = '⏹ Simplification aborted — loaded original mesh';
+          } else {
+            console.warn('Import simplification failed, keeping original mesh:', err);
+          }
+        } finally {
+          activeAbortController = null;
+          isProcessingMesh = false;
+        }
+      }
+    }
+
+    if (loadToken !== activeLoadToken) {
+      disposeGeometrySafely(mesh.geometry);
+      mesh.material?.dispose();
+      return;
+    }
+
+    setProcessingState(true, 'Preparing Viewport...', 'Building BVH & detecting sharp edges...');
+    await waitForNextPaint();
+    if (loadToken !== activeLoadToken) {
+      disposeGeometrySafely(mesh.geometry);
+      mesh.material?.dispose();
+      return;
+    }
+
+    if (initialGeometry) {
+      disposeGeometrySafely(initialGeometry);
+      initialGeometry = null;
+    }
+    clearHistory();
+
+    // Remove previous model
+    if (currentMesh) {
+      scene.remove(currentMesh);
+      disposeGeometrySafely(currentMesh.geometry);
+      currentMesh.material.dispose();
+    }
+    removeEdgeLines();
+    removeMeshBaseLines();
+    removePreview();
+    hideLoosePartsPreview();
+
+    currentMesh = mesh;
+    ensureGeometryBVH(currentMesh.geometry);
+    initialGeometry = currentMesh.geometry.clone();
+    currentIsInitial = true;
+    showEdgeHighlight = true;
+    setEdgeHighlightToggleUI(true);
+    showPreview = false;
+    setPreviewToggleUI(false);
+    syncUndoRedoUI();
+    currentMesh.material.wireframe = shadingMode === 'wire';
+    scene.add(currentMesh);
+    rebuildMeshBaseLines();
+
+    // Focus camera on object geometric center
+    const box = new THREE.Box3().setFromObject(currentMesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 1.0);
+
+    camera.near = Math.max(0.01, maxDim * 0.001);
+    camera.far = Math.max(1000, maxDim * 100);
+    camera.updateProjectionMatrix();
+
+    controls.minDistance = Math.max(0.02, maxDim * 0.002);
+    controls.maxDistance = Math.max(1000, maxDim * 50);
+
+    camera.up.set(0, 1, 0);
+    controls.target.copy(center);
+    setOrbitPivot(center, false);
+    camera.position.copy(
+      center
+        .clone()
+        .add(new THREE.Vector3(maxDim * 1.5, maxDim * 1.1, maxDim * 1.5))
+    );
+    controls.update();
+
+    // Smart default chamfer width: 0.2mm for small objects (< 25mm), 0.5mm otherwise
+    // Slider range stays 0.1–1.0 mm by default (extends automatically from textbox input)
+    const isSmall = maxDim < 25;
+    chamferWidth = isSmall ? 0.2 : 0.5;
+    setWidth(chamferWidth, 1.0);
+
+    // Auto-detect optimal angle threshold for loaded model
+    const optimalAngle = autoDetectAngleThreshold(currentMesh.geometry, { convexOnly });
+    if (typeof optimalAngle === 'number' && Number.isFinite(optimalAngle)) {
+      angleThreshold = optimalAngle;
+      if (setAngle) setAngle(optimalAngle);
+    }
+
+    // Auto-detect edges (also refreshes Info panel, Mesh Health & Optimization banner)
+    handleDetectEdges();
+    updateOptimizationBanner(optInfo);
+    requestRender();
+
+    if (simplifyToast) {
+      showToast(simplifyToast, 'is-selected');
+    }
+  } finally {
+    setProcessingState(false);
   }
-  clearHistory();
-
-  // Remove previous model
-  if (currentMesh) {
-    scene.remove(currentMesh);
-    currentMesh.geometry.dispose();
-    currentMesh.material.dispose();
-  }
-  removeEdgeLines();
-  removeMeshBaseLines();
-  removePreview();
-  hideLoosePartsPreview();
-
-  currentMesh = mesh;
-  initialGeometry = mesh.geometry.clone();
-  currentIsInitial = true;
-  showEdgeHighlight = true;
-  setEdgeHighlightToggleUI(true);
-  showPreview = false;
-  setPreviewToggleUI(false);
-  syncUndoRedoUI();
-  currentMesh.material.wireframe = shadingMode === 'wire';
-  scene.add(currentMesh);
-  rebuildMeshBaseLines();
-
-  // Focus camera on object geometric center
-  const box = new THREE.Box3().setFromObject(currentMesh);
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z, 1.0);
-
-  camera.near = Math.max(0.01, maxDim * 0.001);
-  camera.far = Math.max(1000, maxDim * 100);
-  camera.updateProjectionMatrix();
-
-  controls.minDistance = Math.max(0.02, maxDim * 0.002);
-  controls.maxDistance = Math.max(1000, maxDim * 50);
-
-  camera.up.set(0, 1, 0);
-  controls.target.copy(center);
-  setOrbitPivot(center, false);
-  camera.position.copy(
-    center
-      .clone()
-      .add(new THREE.Vector3(maxDim * 1.5, maxDim * 1.1, maxDim * 1.5))
-  );
-  controls.update();
-
-  // Smart default chamfer width: 0.2mm for small objects (< 25mm), 0.5mm otherwise
-  // Slider range stays 0.1–1.0 mm by default (extends automatically from textbox input)
-  const isSmall = maxDim < 25;
-  chamferWidth = isSmall ? 0.2 : 0.5;
-  setWidth(chamferWidth, 1.0);
-
-  // Auto-detect optimal angle threshold for loaded model
-  const optimalAngle = autoDetectAngleThreshold(currentMesh.geometry, { convexOnly });
-  if (typeof optimalAngle === 'number' && Number.isFinite(optimalAngle)) {
-    angleThreshold = optimalAngle;
-    if (setAngle) setAngle(optimalAngle);
-  }
-
-  // Auto-detect edges (also refreshes Info panel with accurate edge count)
-  handleDetectEdges();
 }
 
 function handleAutoAngle(silent = false) {
@@ -466,9 +640,7 @@ function rebuildMeshBaseLines() {
   const posAttr = geo.getAttribute('position');
   if (!posAttr) return;
 
-  const triCount = geo.index
-    ? Math.floor(geo.index.count / 3)
-    : Math.floor(posAttr.count / 3);
+  const triCount = getGeometryTriCount(geo);
   if (triCount <= 0) return;
 
   const group = new THREE.Group();
@@ -491,7 +663,7 @@ function rebuildMeshBaseLines() {
     group.add(wireLines);
   }
 
-  const creaseGeo = new THREE.EdgesGeometry(geo, 14);
+  const creaseGeo = buildCreaseGeometryFromTopology(getFastMeshTopology(geo), 14);
   const creaseMat = new THREE.LineBasicMaterial({
     color: 0x0b1120,
     transparent: true,
@@ -512,6 +684,7 @@ function rebuildMeshBaseLines() {
 
   meshBaseLinesGroup = group;
   scene.add(meshBaseLinesGroup);
+  requestRender();
 }
 
 /**
@@ -529,6 +702,7 @@ function applyShadingMode(mode) {
   if (meshBaseLinesGroup) {
     meshBaseLinesGroup.visible = shadingMode === 'mesh';
   }
+  requestRender();
 }
 
 function setOverlaysVisible(visible, announce = false) {
@@ -538,6 +712,7 @@ function setOverlaysVisible(visible, announce = false) {
   if (edgeLinesObject) edgeLinesObject.visible = next;
   if (previewGroup) previewGroup.visible = next && showPreview;
   if (!next) clearHoverState();
+  requestRender();
   if (announce) {
     showToast(next ? 'Overlays visible (O)' : 'Overlays hidden (O)', next ? 'is-selected' : 'is-unselected');
   }
@@ -563,6 +738,7 @@ function handleSelectAll() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
 }
 
 function handleSelectNone() {
@@ -571,6 +747,7 @@ function handleSelectNone() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, 0, currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
 }
 
 function handleSelectInvert() {
@@ -580,6 +757,7 @@ function handleSelectInvert() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
 }
 
 function handleSelectHorizontal() {
@@ -589,6 +767,7 @@ function handleSelectHorizontal() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} horizontal edges`, 'is-selected');
 }
 
@@ -599,6 +778,7 @@ function handleSelectVertical() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} vertical edges`, 'is-selected');
 }
 
@@ -609,6 +789,7 @@ function handleSelectTopBottom() {
   updateEdgeCount(currentEdgeData.sharpEdges.length, currentEdgeData.getSelectedCount(), currentEdgeData.filteredCount);
   syncActiveFaceHighlight();
   if (showPreview) updatePreview();
+  requestRender();
   showToast(`Selected ${currentEdgeData.getSelectedCount()} top & bottom edges`, 'is-selected');
 }
 
@@ -654,12 +835,16 @@ function handleDetectEdges(options = {}) {
   if (showPreview) {
     updatePreview();
   }
+  requestRender();
 }
 
 // ---- Interactive 3D Edge & Face Hover & Selection ----
 let pointerDownPos = { x: 0, y: 0 };
 let postClickOrigin = null;
 const hoverBadge = document.getElementById('edge-hover-badge');
+
+let pendingPointerEvent = null;
+let pointerRafId = 0;
 
 function clearFaceHighlight() {
   if (faceHighlightMesh) {
@@ -672,6 +857,11 @@ function clearFaceHighlight() {
 }
 
 function clearHoverState() {
+  pendingPointerEvent = null;
+  if (pointerRafId) {
+    cancelAnimationFrame(pointerRafId);
+    pointerRafId = 0;
+  }
   postClickOrigin = null;
   clearFaceHighlight();
   if (currentEdgeData) {
@@ -681,6 +871,7 @@ function clearHoverState() {
     hoverBadge.classList.remove('visible');
   }
   canvas.style.cursor = 'default';
+  requestRender();
 }
 
 function updateFaceHighlight(surfaceId, forceRebuild = false) {
@@ -702,24 +893,44 @@ function updateFaceHighlight(surfaceId, forceRebuild = false) {
   if (!faceHighlightMesh || surfaceId !== highlightedSurfaceId || forceRebuild) {
     const faceCount = surf.faceIndices.length;
     const positions = new Float32Array(faceCount * 9);
-    const { faces, vertices } = currentEdgeData;
-    for (let i = 0; i < faceCount; i++) {
-      const tri = faces[surf.faceIndices[i]];
-      if (!tri) continue;
-      const v0 = vertices[tri[0]];
-      const v1 = vertices[tri[1]];
-      const v2 = vertices[tri[2]];
-      if (!v0 || !v1 || !v2) continue;
-      const off = i * 9;
-      positions[off] = v0.x;
-      positions[off + 1] = v0.y;
-      positions[off + 2] = v0.z;
-      positions[off + 3] = v1.x;
-      positions[off + 4] = v1.y;
-      positions[off + 5] = v1.z;
-      positions[off + 6] = v2.x;
-      positions[off + 7] = v2.y;
-      positions[off + 8] = v2.z;
+    const { triIndices, vertCoords, faces, vertices } = currentEdgeData;
+
+    if (triIndices && vertCoords) {
+      for (let i = 0; i < faceCount; i++) {
+        const fBase = surf.faceIndices[i] * 3;
+        const o0 = triIndices[fBase] * 3;
+        const o1 = triIndices[fBase + 1] * 3;
+        const o2 = triIndices[fBase + 2] * 3;
+        const off = i * 9;
+        positions[off] = vertCoords[o0];
+        positions[off + 1] = vertCoords[o0 + 1];
+        positions[off + 2] = vertCoords[o0 + 2];
+        positions[off + 3] = vertCoords[o1];
+        positions[off + 4] = vertCoords[o1 + 1];
+        positions[off + 5] = vertCoords[o1 + 2];
+        positions[off + 6] = vertCoords[o2];
+        positions[off + 7] = vertCoords[o2 + 1];
+        positions[off + 8] = vertCoords[o2 + 2];
+      }
+    } else {
+      for (let i = 0; i < faceCount; i++) {
+        const tri = faces[surf.faceIndices[i]];
+        if (!tri) continue;
+        const v0 = vertices[tri[0]];
+        const v1 = vertices[tri[1]];
+        const v2 = vertices[tri[2]];
+        if (!v0 || !v1 || !v2) continue;
+        const off = i * 9;
+        positions[off] = v0.x;
+        positions[off + 1] = v0.y;
+        positions[off + 2] = v0.z;
+        positions[off + 3] = v1.x;
+        positions[off + 4] = v1.y;
+        positions[off + 5] = v1.z;
+        positions[off + 6] = v2.x;
+        positions[off + 7] = v2.y;
+        positions[off + 8] = v2.z;
+      }
     }
 
     if (!faceHighlightMesh) {
@@ -757,6 +968,7 @@ function updateFaceHighlight(surfaceId, forceRebuild = false) {
 
   faceHighlightMesh.material.color.setHex(color);
   faceHighlightMesh.material.opacity = opacity;
+  requestRender();
 }
 
 function updateHoverBadge(edgeIdx) {
@@ -821,8 +1033,12 @@ function updateFaceHoverBadge(surfaceId) {
 }
 
 const raycaster = new THREE.Raycaster();
+raycaster.firstHitOnly = true;
 const pointerNDC = new THREE.Vector2();
 const _edgeClosestPt = new THREE.Vector3();
+const _segStart = new THREE.Vector3();
+const _segEnd = new THREE.Vector3();
+const _projScreenMatrix = new THREE.Matrix4();
 
 function getSurfaceHitAtClientPos(clientX, clientY) {
   if (!currentMesh || !currentEdgeData || currentEdgeData.surfaces.length === 0) {
@@ -875,64 +1091,102 @@ function getClosestEdge(clientX, clientY, isTouch = false, maxFrontDist = Infini
     raycaster.setFromCamera(pointerNDC, camera);
   }
 
+  camera.updateMatrixWorld();
+  _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const m = _projScreenMatrix.elements;
+  const m0 = m[0], m1 = m[1], m2 = m[2], m3 = m[3];
+  const m4 = m[4], m5 = m[5], m6 = m[6], m7 = m[7];
+  const m8 = m[8], m9 = m[9], m10 = m[10], m11 = m[11];
+  const m12 = m[12], m13 = m[13], m14 = m[14], m15 = m[15];
+
   const occlusionTol = Math.max(0.4, maxFrontDist * 0.02);
   const maxTolerance = isTouch ? 28 : 18;
   const maxToleranceSq = maxTolerance * maxTolerance;
+  const halfW = w * 0.5;
+  const halfH = h * 0.5;
+  const minX = mx - maxTolerance;
+  const maxX = mx + maxTolerance;
+  const minY = my - maxTolerance;
+  const maxY = my + maxTolerance;
 
-  const p1Proj = new THREE.Vector3();
-  const p2Proj = new THREE.Vector3();
-  const candidates = [];
+  const coords = currentEdgeData.edgeEndpointCoords;
+  const edgeCount = currentEdgeData.sharpEdges.length;
 
-  for (let i = 0; i < currentEdgeData.sharpEdges.length; i++) {
-    const edge = currentEdgeData.sharpEdges[i];
+  let bestIdx = -1;
+  let bestDistSq = Infinity;
+  let bestMidZ = Infinity;
 
-    p1Proj.copy(edge.v1).project(camera);
-    p2Proj.copy(edge.v2).project(camera);
+  for (let i = 0; i < edgeCount; i++) {
+    let x1w, y1w, z1w, x2w, y2w, z2w;
+    if (coords) {
+      const o = i * 6;
+      x1w = coords[o];
+      y1w = coords[o + 1];
+      z1w = coords[o + 2];
+      x2w = coords[o + 3];
+      y2w = coords[o + 4];
+      z2w = coords[o + 5];
+    } else {
+      const edge = currentEdgeData.sharpEdges[i];
+      x1w = edge.v1.x; y1w = edge.v1.y; z1w = edge.v1.z;
+      x2w = edge.v2.x; y2w = edge.v2.y; z2w = edge.v2.z;
+    }
 
-    if (p1Proj.z > 1 || p2Proj.z > 1) continue; // Behind camera
+    const cw1 = m3 * x1w + m7 * y1w + m11 * z1w + m15;
+    const cw2 = m3 * x2w + m7 * y2w + m11 * z2w + m15;
+    if (cw1 <= 1e-6 || cw2 <= 1e-6) continue;
 
-    const x1 = ((p1Proj.x + 1) * w) / 2;
-    const y1 = ((-p1Proj.y + 1) * h) / 2;
-    const x2 = ((p2Proj.x + 1) * w) / 2;
-    const y2 = ((-p2Proj.y + 1) * h) / 2;
+    const inv1 = 1 / cw1;
+    const inv2 = 1 / cw2;
+    const nz1 = (m2 * x1w + m6 * y1w + m10 * z1w + m14) * inv1;
+    const nz2 = (m2 * x2w + m6 * y2w + m10 * z2w + m14) * inv2;
+    if (nz1 > 1 || nz2 > 1) continue;
 
-    const dx = x2 - x1;
-    const dy = y2 - y1;
+    const sx1 = ((m0 * x1w + m4 * y1w + m8 * z1w + m12) * inv1 + 1) * halfW;
+    const sx2 = ((m0 * x2w + m4 * y2w + m8 * z2w + m12) * inv2 + 1) * halfW;
+    if ((sx1 < minX && sx2 < minX) || (sx1 > maxX && sx2 > maxX)) continue;
+
+    const sy1 = (-(m1 * x1w + m5 * y1w + m9 * z1w + m13) * inv1 + 1) * halfH;
+    const sy2 = (-(m1 * x2w + m5 * y2w + m9 * z2w + m13) * inv2 + 1) * halfH;
+    if ((sy1 < minY && sy2 < minY) || (sy1 > maxY && sy2 > maxY)) continue;
+
+    const dx = sx2 - sx1;
+    const dy = sy2 - sy1;
     const lenSq = dx * dx + dy * dy;
     let distSq;
     if (lenSq === 0) {
-      distSq = (mx - x1) ** 2 + (my - y1) ** 2;
+      distSq = (mx - sx1) * (mx - sx1) + (my - sy1) * (my - sy1);
     } else {
-      const t = Math.max(0, Math.min(1, ((mx - x1) * dx + (my - y1) * dy) / lenSq));
-      const qx = x1 + t * dx;
-      const qy = y1 + t * dy;
-      distSq = (mx - qx) ** 2 + (my - qy) ** 2;
+      let t = ((mx - sx1) * dx + (my - sy1) * dy) / lenSq;
+      if (t < 0) t = 0;
+      else if (t > 1) t = 1;
+      const qx = sx1 + t * dx;
+      const qy = sy1 + t * dy;
+      distSq = (mx - qx) * (mx - qx) + (my - qy) * (my - qy);
     }
 
-    if (distSq <= maxToleranceSq) {
-      if (maxFrontDist < Infinity) {
-        raycaster.ray.distanceSqToSegment(edge.v1, edge.v2, undefined, _edgeClosestPt);
-        const camDist = camera.position.distanceTo(_edgeClosestPt);
-        if (camDist > maxFrontDist + occlusionTol) continue;
-      }
-      const midZ = (p1Proj.z + p2Proj.z) * 0.5;
-      candidates.push({ idx: i, dist: Math.sqrt(distSq), midZ });
+    if (distSq > maxToleranceSq) continue;
+
+    if (maxFrontDist < Infinity) {
+      _segStart.set(x1w, y1w, z1w);
+      _segEnd.set(x2w, y2w, z2w);
+      raycaster.ray.distanceSqToSegment(_segStart, _segEnd, undefined, _edgeClosestPt);
+      const camDist = camera.position.distanceTo(_edgeClosestPt);
+      if (camDist > maxFrontDist + occlusionTol) continue;
+    }
+
+    const midZ = (nz1 + nz2) * 0.5;
+    if (
+      bestIdx === -1 ||
+      (Math.abs(midZ - bestMidZ) > 0.02 ? midZ < bestMidZ : distSq < bestDistSq)
+    ) {
+      bestIdx = i;
+      bestDistSq = distSq;
+      bestMidZ = midZ;
     }
   }
 
-  if (candidates.length === 0) return -1;
-
-  // Depth-first candidate prioritization:
-  // Visible front edges (lower midZ) beat occluded back edges
-  candidates.sort((a, b) => {
-    const dz = a.midZ - b.midZ;
-    if (Math.abs(dz) > 0.02) {
-      return dz; // Foreground edge wins
-    }
-    return a.dist - b.dist; // Closer screen distance wins for coplanar edges
-  });
-
-  return candidates[0].idx;
+  return bestIdx;
 }
 
 function resolveViewportTarget(clientX, clientY, isTouch = false) {
@@ -953,34 +1207,50 @@ function resolveViewportTarget(clientX, clientY, isTouch = false) {
   return { type: 'none' };
 }
 
-canvas.addEventListener('pointermove', (e) => {
-  if (e.pointerType === 'touch') return;
+function processPointerMove(clientX, clientY) {
   if (!currentEdgeData || controls.state !== -1) return;
   if (!showEdgeHighlight) {
     clearHoverState();
     return;
   }
   if (postClickOrigin) {
-    const moveDist = Math.hypot(e.clientX - postClickOrigin.x, e.clientY - postClickOrigin.y);
+    const moveDist = Math.hypot(clientX - postClickOrigin.x, clientY - postClickOrigin.y);
     if (moveDist < 4) return;
     postClickOrigin = null;
   }
-  const target = resolveViewportTarget(e.clientX, e.clientY, false);
+  const target = resolveViewportTarget(clientX, clientY, false);
   if (target.type === 'edge') {
     clearFaceHighlight();
     currentEdgeData.setHovered(target.edgeIdx, loopSelectionMode);
     updateHoverBadge(target.edgeIdx);
     canvas.style.cursor = 'pointer';
+    requestRender();
   } else if (target.type === 'face') {
     currentEdgeData.setHoveredSurface(target.surfaceId);
     updateFaceHighlight(target.surfaceId);
     updateFaceHoverBadge(target.surfaceId);
     canvas.style.cursor = 'pointer';
+    requestRender();
   } else {
     clearFaceHighlight();
     currentEdgeData.setHovered(-1);
     updateHoverBadge(-1);
     canvas.style.cursor = 'default';
+    requestRender();
+  }
+}
+
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') return;
+  pendingPointerEvent = { clientX: e.clientX, clientY: e.clientY };
+  if (!pointerRafId) {
+    pointerRafId = requestAnimationFrame(() => {
+      pointerRafId = 0;
+      if (!pendingPointerEvent) return;
+      const { clientX, clientY } = pendingPointerEvent;
+      pendingPointerEvent = null;
+      processPointerMove(clientX, clientY);
+    });
   }
 });
 
@@ -1013,6 +1283,7 @@ canvas.addEventListener('pointerup', (e) => {
         updateHoverBadge(target.edgeIdx);
       }
       if (showPreview) updatePreview();
+      requestRender();
     } else if (target.type === 'face') {
       const toggled = currentEdgeData.toggleSurface(target.surfaceId);
       if (toggled) {
@@ -1030,6 +1301,7 @@ canvas.addEventListener('pointerup', (e) => {
           updateFaceHoverBadge(target.surfaceId);
         }
         if (showPreview) updatePreview();
+        requestRender();
       }
     }
   }
@@ -1048,6 +1320,7 @@ const resizeObserver = new ResizeObserver(() => {
   if (currentEdgeData?.setResolution) {
     currentEdgeData.setResolution(w, h);
   }
+  requestRender();
 });
 resizeObserver.observe(viewportEl);
 
@@ -1062,6 +1335,7 @@ function updatePreview() {
     previewGroup.visible = showEdgeHighlight && showPreview;
     scene.add(previewGroup);
   }
+  requestRender();
 }
 
 function removePreview() {
@@ -1074,6 +1348,7 @@ function removePreview() {
       }
     });
     previewGroup = null;
+    requestRender();
   }
 }
 
@@ -1087,6 +1362,7 @@ function removeLoosePartsPreview() {
       }
     });
     loosePartsPreviewGroup = null;
+    requestRender();
   }
 }
 
@@ -1164,6 +1440,7 @@ function handleToggleLoosePartsPreview() {
   loosePartsPreviewGroup.add(boxHelper);
 
   scene.add(loosePartsPreviewGroup);
+  requestRender();
 
   showToast(
     `👁 Highlighting ${looseInfo.count} loose part${looseInfo.count > 1 ? 's' : ''} (${looseInfo.triangles} tris) in glowing red`,
@@ -1186,11 +1463,12 @@ function finalizeReplacedGeometry(nextGeometry, options = {}) {
   currentIsInitial = false;
   syncUndoRedoUI();
 
-  currentMesh.geometry.dispose();
+  disposeGeometrySafely(currentMesh.geometry);
   currentMesh.geometry = nextGeometry;
   currentMesh.geometry.computeVertexNormals();
   currentMesh.geometry.computeBoundingBox();
   currentMesh.geometry.computeBoundingSphere();
+  ensureGeometryBVH(currentMesh.geometry);
 
   removeEdgeLines();
   removePreview();
@@ -1209,6 +1487,7 @@ function finalizeReplacedGeometry(nextGeometry, options = {}) {
   rebuildMeshBaseLines();
   ensureEdgeHighlightVisible();
   handleDetectEdges();
+  requestRender();
 }
 
 let isProcessingMesh = false;
@@ -1585,9 +1864,9 @@ async function handleCleanUnconnectedParts() {
     }
 
     if (res.partsRemoved === 0 && res.trianglesRemoved === 0) {
-      res.geometry.dispose();
+      disposeGeometrySafely(res.geometry);
       const popped = undoStack.pop();
-      popped?.geo?.dispose();
+      disposeGeometrySafely(popped?.geo);
       syncUndoRedoUI();
       setProcessingState(false);
       refreshInfo();
@@ -1600,6 +1879,97 @@ async function handleCleanUnconnectedParts() {
       ? `Removed ${res.partsRemoved} loose part${res.partsRemoved > 1 ? 's' : ''} (${res.trianglesRemoved} tris) (Ctrl+Z to undo)`
       : `Removed ${res.trianglesRemoved} broken sliver triangle${res.trianglesRemoved > 1 ? 's' : ''} (Ctrl+Z to undo)`;
     showToast(msg, 'is-selected');
+  } finally {
+    activeAbortController = null;
+    isProcessingMesh = false;
+    setProcessingState(false);
+  }
+}
+
+// ---- Manual / On-demand Mesh Simplification ----
+async function handleManualSimplifyMesh() {
+  if (isProcessingMesh || !currentMesh || !currentMesh.geometry) return;
+
+  const topo = getFastMeshTopology(currentMesh.geometry);
+  const optInfo = detectUnoptimizedMesh(topo);
+  const choice = await showSimplifyModal(
+    { fileName: currentMesh.userData?.fileName || '', ...optInfo },
+    { mode: 'manual' }
+  );
+  if (choice.action !== 'simplify' || !currentMesh || !currentMesh.geometry) return;
+
+  hideLoosePartsPreview();
+  isProcessingMesh = true;
+  activeAbortController = new AbortController();
+  const { signal } = activeAbortController;
+
+  setProcessingState(
+    true,
+    'Simplifying Mesh...',
+    `Optimizing ${optInfo.triCount.toLocaleString()} triangles...`,
+    'simplify-mesh-btn'
+  );
+
+  const abortOperation = () => {
+    const popped = undoStack.pop();
+    disposeGeometrySafely(popped?.geo);
+    syncUndoRedoUI();
+    showToast('⏹ Simplification aborted — mesh unchanged', 'is-unselected');
+  };
+
+  try {
+    await waitForNextPaint();
+    if (signal.aborted) {
+      showToast('⏹ Simplification aborted — mesh unchanged', 'is-unselected');
+      return;
+    }
+
+    pushUndoState();
+
+    let simRes;
+    try {
+      simRes = await simplifyGeometryAsync(currentMesh.geometry, {
+        tolerance: choice.tolerance,
+        signal,
+        onProgress: (msg) => {
+          const detailEl = document.getElementById('processing-detail');
+          if (detailEl) detailEl.textContent = msg;
+        },
+      });
+    } catch (err) {
+      if (err?.name === 'AbortError' || signal.aborted) {
+        abortOperation();
+        return;
+      }
+      console.error('Mesh simplification failed:', err);
+      const popped = undoStack.pop();
+      disposeGeometrySafely(popped?.geo);
+      syncUndoRedoUI();
+      showToast('Mesh simplification failed on current geometry', 'is-unselected');
+      return;
+    }
+
+    if (signal.aborted) {
+      disposeGeometrySafely(simRes?.geometry);
+      abortOperation();
+      return;
+    }
+
+    if (!simRes.geometry || simRes.engine === 'unchanged' || simRes.trisAfter >= simRes.trisBefore) {
+      disposeGeometrySafely(simRes?.geometry);
+      const popped = undoStack.pop();
+      disposeGeometrySafely(popped?.geo);
+      syncUndoRedoUI();
+      refreshInfo();
+      showToast('✓ Mesh is already optimally tessellated', 'is-selected');
+      return;
+    }
+
+    finalizeReplacedGeometry(simRes.geometry);
+    showToast(
+      `⚡ Simplified (${simRes.engine}): ${simRes.trisBefore.toLocaleString()} → ${simRes.trisAfter.toLocaleString()} tris (-${simRes.reductionPct}%) (Ctrl+Z to undo)`,
+      'is-selected'
+    );
   } finally {
     activeAbortController = null;
     isProcessingMesh = false;
@@ -1636,13 +2006,12 @@ function refreshInfo() {
   if (!currentMesh) {
     updateInfo({ triangles: 0, vertices: 0, edges: 0, dimensions: '-' });
     updateMeshHealth(null);
+    updateOptimizationBanner(null);
     return;
   }
   const geo = currentMesh.geometry;
   const posAttr = geo.getAttribute('position');
-  const triCount = geo.index
-    ? geo.index.count / 3
-    : posAttr.count / 3;
+  const triCount = getGeometryTriCount(geo);
 
   geo.computeBoundingBox();
   const size = new THREE.Vector3();
@@ -1650,19 +2019,36 @@ function refreshInfo() {
   const dimStr = `${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm`;
 
   updateInfo({
-    triangles: Math.floor(triCount),
-    vertices: posAttr.count,
+    triangles: triCount,
+    vertices: posAttr ? posAttr.count : 0,
     edges: currentEdgeData ? currentEdgeData.sharpEdges.length : 0,
     dimensions: dimStr,
   });
   updateMeshHealth(analyzeMesh(geo));
+  updateOptimizationBanner(detectUnoptimizedMesh(getFastMeshTopology(geo)));
 }
 
-// ---- Animation loop ----
+// ---- Demand-driven Animation loop ----
+const _prevCamPos = new THREE.Vector3(Infinity, Infinity, Infinity);
+const _prevCamQuat = new THREE.Quaternion();
+const _prevTarget = new THREE.Vector3(Infinity, Infinity, Infinity);
+
 function animate() {
   requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
+  const ctrlMoved = controls.update();
+  const camChanged =
+    ctrlMoved ||
+    _prevCamPos.distanceToSquared(camera.position) > 1e-10 ||
+    _prevTarget.distanceToSquared(controls.target) > 1e-10 ||
+    1 - Math.abs(_prevCamQuat.dot(camera.quaternion)) > 1e-12;
+
+  if (camChanged || needsRender) {
+    renderer.render(scene, camera);
+    _prevCamPos.copy(camera.position);
+    _prevCamQuat.copy(camera.quaternion);
+    _prevTarget.copy(controls.target);
+    needsRender = false;
+  }
 }
 
 animate();
@@ -1735,4 +2121,4 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Auto-load starter demo model (Hex Nut) so user immediately sees chamfer in action
-loadFromUrl('./models/hex_nut.stl', onModelLoaded, onModelLoadError);
+loadFromUrl('./models/hex_nut.stl', onModelLoaded, onModelLoadError, handleModelLoadStart);

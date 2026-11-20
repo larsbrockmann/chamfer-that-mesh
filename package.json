@@ -26,7 +26,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/validate_test_library.mjs"
+    "test": "node tests/validate_test_library.mjs",
+    "test:perf": "node tests/perf_test.mjs",
+    "test:all": "npm test && npm run test:perf"
   },
   "dependencies": {
     "manifold-3d": "^3.5.5",
